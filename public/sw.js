@@ -1,4 +1,4 @@
-const CACHE = 'spending-trace-shell-v1';
+const CACHE = 'spending-trace-shell-v2';
 const CORE = ['/', '/manifest.webmanifest', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {

@@ -14,9 +14,20 @@ type Expense = {
   occurredAt: string;
   note?: string;
   source?: 'manual' | 'import';
+  externalId?: string;
+  batchId?: string;
+  importedAt?: string;
+  sourceFile?: string;
   demo?: boolean;
 };
 type Draft = Omit<Expense, 'id' | 'source' | 'demo'> & { amount: string };
+type ImportPreview = {
+  filename: string;
+  channel: Channel;
+  expenses: Expense[];
+  ignored: number;
+  encoding: string;
+};
 
 const STORAGE_KEY = 'spending-trace-expenses-v1';
 const SETTINGS_KEY = 'spending-trace-settings-v1';
@@ -67,7 +78,7 @@ function csvEscape(value: string | number) {
   return `"${String(value).replaceAll('"', '""')}"`;
 }
 
-function parseCsvLine(line: string) {
+function parseCsvLine(line: string, delimiter = ',') {
   const cells: string[] = [];
   let current = '';
   let quoted = false;
@@ -75,7 +86,7 @@ function parseCsvLine(line: string) {
     const char = line[index];
     if (char === '"' && quoted && line[index + 1] === '"') { current += '"'; index += 1; }
     else if (char === '"') quoted = !quoted;
-    else if (char === ',' && !quoted) { cells.push(current.trim()); current = ''; }
+    else if (char === delimiter && !quoted) { cells.push(current.trim()); current = ''; }
     else current += char;
   }
   cells.push(current.trim());
@@ -87,30 +98,76 @@ function pick(row: Record<string, string>, names: string[]) {
   return '';
 }
 
-function parseExpenseCsv(text: string, filename: string): Expense[] {
+function autoCategory(text: string) {
+  const rules: Array<[string, RegExp]> = [
+    ['餐饮', /餐|饭|面|粉|粥|咖啡|茶|奶|饮|食|肯德基|麦当劳|美团|饿了么|瑞幸|星巴克|便利店/],
+    ['交通', /地铁|公交|铁路|高铁|火车|机票|航空|滴滴|打车|网约车|出租|加油|停车|高速|单车/],
+    ['购物', /淘宝|天猫|京东|拼多多|唯品会|商城|商场|超市|服饰|数码|家电/],
+    ['日用', /药店|生活用品|日用品|百货|洗护|纸巾|家居/],
+    ['娱乐', /电影|影院|游戏|视频|音乐|会员|演出|KTV|健身/],
+    ['住房', /房租|物业|水费|电费|燃气|宽带|话费/],
+    ['医疗', /医院|诊所|医疗|挂号|体检|药房/],
+    ['人情', /红包|转账|礼物|礼金/],
+  ];
+  return rules.find(([, pattern]) => pattern.test(text))?.[0] || '其他';
+}
+
+function parseExpenseCsv(text: string, filename: string) {
   const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line.trim());
-  const headerIndex = lines.findIndex((line) => /交易时间|时间/.test(line) && /金额/.test(line));
+  const headerIndex = lines.findIndex((line) => /交易时间|交易创建时间|创建时间|付款时间|时间/.test(line) && /金额/.test(line));
   if (headerIndex < 0) throw new Error('没有找到包含“交易时间”和“金额”的表头');
-  const headers = parseCsvLine(lines[headerIndex]).map((cell) => cell.replaceAll(' ', ''));
+  const delimiter = (lines[headerIndex].match(/\t/g)?.length || 0) > (lines[headerIndex].match(/,/g)?.length || 0) ? '\t' : ',';
+  const headers = parseCsvLine(lines[headerIndex], delimiter).map((cell) => cell.replace(/[\s\uFEFF]/g, ''));
   const inferredChannel: Channel = /支付宝|alipay/i.test(filename + text.slice(0, 300)) ? '支付宝' : '微信';
-  return lines.slice(headerIndex + 1).map((line, index) => {
-    const cells = parseCsvLine(line);
+  let ignored = 0;
+  const expenses = lines.slice(headerIndex + 1).map((line, index) => {
+    const cells = parseCsvLine(line, delimiter);
     const row = Object.fromEntries(headers.map((header, cellIndex) => [header, cells[cellIndex] || '']));
     const direction = pick(row, ['收/支', '收支', '收支类型', '交易类型']);
     const status = pick(row, ['交易状态', '当前状态']);
-    if (/收入|退款|已退款/.test(direction + status)) return null;
-    const amount = Number(pick(row, ['金额(元)', '金额（元）', '金额', '交易金额']).replace(/[¥￥,\s]/g, ''));
-    const rawTime = pick(row, ['交易时间', '时间', '创建时间', '付款时间']).replaceAll('/', '-');
-    if (!Number.isFinite(amount) || amount <= 0 || !rawTime) return null;
+    if (/收入|退款|已退款|交易关闭|已关闭|失败|待付款/.test(direction + status)) { ignored += 1; return null; }
+    const amount = Number(pick(row, ['金额(元)', '金额（元）', '订单金额(元)', '订单金额（元）', '实付金额', '金额', '交易金额']).replace(/[¥￥,\s]/g, ''));
+    const rawTime = pick(row, ['交易时间', '交易创建时间', '创建时间', '付款时间', '时间']).replaceAll('/', '-');
+    if (!Number.isFinite(amount) || amount <= 0 || !rawTime) { ignored += 1; return null; }
     const occurredAt = rawTime.length >= 16 ? rawTime.slice(0, 16).replace(' ', 'T') : localDateTime();
-    const merchant = pick(row, ['交易对方', '交易对象', '商户名称', '商品', '商品说明', '交易说明']) || '账单导入';
+    const merchant = pick(row, ['交易对方', '交易对象', '商户名称', '卖家信息', '名称', '商家', '商品名称', '商品', '商品说明', '交易说明']) || '账单导入';
+    const product = pick(row, ['商品名称', '商品', '商品说明', '交易说明']);
     const method = pick(row, ['支付方式', '支付渠道', '付款方式']) || inferredChannel;
-    return { id: `import-${Date.now()}-${index}`, amount, merchant, category: '其他', channel: inferredChannel, method, occurredAt, source: 'import' as const };
+    const rowChannel = pick(row, ['渠道']);
+    const channel: Channel = rowChannel === '支付宝' || rowChannel === '微信' ? rowChannel : inferredChannel;
+    const externalId = pick(row, ['交易单号', '交易号', '支付宝交易号', '订单号', '商户订单号']);
+    return {
+      id: `import-${Date.now()}-${index}`,
+      amount,
+      merchant,
+      category: pick(row, ['分类']) || autoCategory(`${merchant} ${product}`),
+      channel,
+      method,
+      occurredAt,
+      note: pick(row, ['备注']) || (product && product !== merchant ? product : ''),
+      externalId: externalId || undefined,
+      source: 'import' as const,
+    };
   }).filter((item): item is Expense => item !== null);
+  if (!expenses.length) throw new Error('没有识别到有效支出；请确认选择的是解压后的消费明细 CSV');
+  return { expenses, channel: inferredChannel, ignored };
 }
 
 function signature(item: Expense) {
-  return `${item.occurredAt.slice(0, 16)}|${item.amount.toFixed(2)}|${item.merchant.replaceAll(' ', '')}`;
+  if (item.externalId) return `${item.channel}|id:${item.externalId}`;
+  return `${item.channel}|${item.occurredAt.slice(0, 16)}|${item.amount.toFixed(2)}|${item.merchant.replaceAll(' ', '')}`;
+}
+
+function isLikelyManualDuplicate(a: Expense, b: Expense) {
+  if (a.channel !== b.channel || Math.abs(a.amount - b.amount) > 0.005) return false;
+  return Math.abs(new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime()) <= 15 * 60_000;
+}
+
+async function decodeCsv(file: File) {
+  const buffer = await file.arrayBuffer();
+  const candidates: Array<[string, string]> = [['UTF-8', new TextDecoder('utf-8').decode(buffer)]];
+  try { candidates.push(['GB18030', new TextDecoder('gb18030').decode(buffer)]); } catch { /* UTF-8 remains available */ }
+  return candidates.find(([, text]) => /交易时间|交易创建时间|创建时间|付款时间/.test(text) && /金额/.test(text)) || candidates[0];
 }
 
 export default function Home() {
@@ -120,6 +177,7 @@ export default function Home() {
   const [ready, setReady] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showData, setShowData] = useState(false);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(makeDraft());
   const [notice, setNotice] = useState('');
@@ -178,6 +236,14 @@ export default function Home() {
     return result;
   }, [expenses]);
 
+  const latestImport = useMemo(() => {
+    const imported = expenses.filter((item) => item.batchId && item.importedAt).sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''));
+    if (!imported.length) return null;
+    const batchId = imported[0].batchId;
+    const rows = imported.filter((item) => item.batchId === batchId);
+    return { batchId, filename: rows[0].sourceFile || '官方账单', importedAt: rows[0].importedAt || '', count: rows.length };
+  }, [expenses]);
+
   function openNew() { setEditingId(null); setDraft(makeDraft()); setShowAdd(true); }
   function openEdit(item: Expense) { setEditingId(item.id); setDraft({ amount: String(item.amount), merchant: item.merchant, category: item.category, channel: item.channel, method: item.method, occurredAt: item.occurredAt, note: item.note || '' }); setShowAdd(true); }
 
@@ -225,26 +291,64 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const text = await file.text();
-      let incoming: Expense[];
-      if (file.name.toLowerCase().endsWith('.json')) {
+      const extension = file.name.toLowerCase().split('.').pop();
+      if (extension === 'zip' || extension === 'xls' || extension === 'xlsx') throw new Error('请先在“文件”App 中解压，并选择其中的 CSV 明细文件');
+      if (extension === 'json') {
+        const text = await file.text();
         const parsed = JSON.parse(text);
-        incoming = Array.isArray(parsed) ? parsed : parsed.expenses;
+        const incoming: Expense[] = Array.isArray(parsed) ? parsed : parsed.expenses;
         if (!Array.isArray(incoming)) throw new Error('备份中没有消费记录');
         if (parsed.budget) setBudget(Number(parsed.budget));
-      } else incoming = parseExpenseCsv(text, file.name);
-      const known = new Set(expenses.map(signature));
-      const unique = incoming.filter((item) => !known.has(signature(item)));
-      setExpenses((current) => [...unique, ...current]);
-      setNotice(`成功导入 ${unique.length} 笔，跳过 ${incoming.length - unique.length} 笔重复记录`);
-      setShowData(false);
+        const known = new Set(expenses.map(signature));
+        const unique = incoming.filter((item) => !known.has(signature(item)));
+        setExpenses((current) => [...unique, ...current]);
+        setNotice(`备份已恢复：新增 ${unique.length} 笔记录`);
+        setShowData(false);
+      } else {
+        const [encoding, text] = await decodeCsv(file);
+        const parsed = parseExpenseCsv(text, file.name);
+        setImportPreview({ filename: file.name, expenses: parsed.expenses, channel: parsed.channel, ignored: parsed.ignored, encoding });
+        setShowData(false);
+      }
     } catch (error) { setNotice(`导入失败：${error instanceof Error ? error.message : '文件格式不正确'}`); }
     event.target.value = '';
     setTimeout(() => setNotice(''), 3800);
   }
 
+  function confirmBillImport() {
+    if (!importPreview) return;
+    const importedAt = new Date().toISOString();
+    const batchId = `batch-${Date.now()}`;
+    const known = new Set(expenses.map(signature));
+    let duplicates = 0;
+    const additions = importPreview.expenses.map((item) => ({
+      ...item,
+      channel: importPreview.channel,
+      batchId,
+      importedAt,
+      sourceFile: importPreview.filename,
+    })).filter((item) => {
+      if (known.has(signature(item)) || expenses.some((current) => isLikelyManualDuplicate(current, item))) { duplicates += 1; return false; }
+      known.add(signature(item));
+      return true;
+    });
+    setExpenses((current) => [...additions, ...current]);
+    setImportPreview(null);
+    setNotice(`导入完成：新增 ${additions.length} 笔，匹配或跳过 ${duplicates} 笔`);
+    setTimeout(() => setNotice(''), 4200);
+  }
+
+  function undoLatestImport() {
+    if (!latestImport || !window.confirm(`撤销“${latestImport.filename}”导入的 ${latestImport.count} 笔记录吗？`)) return;
+    setExpenses((current) => current.filter((item) => item.batchId !== latestImport.batchId));
+    setNotice('最近一次账单导入已撤销');
+    setTimeout(() => setNotice(''), 2600);
+  }
+
   const periodLabel = period === 'today' ? '今日' : period === 'week' ? '本周' : '本月';
   const maxTrend = Math.max(...trend.map((day) => day.value), 1);
+  const previewTotal = importPreview?.expenses.reduce((sum, item) => sum + item.amount, 0) || 0;
+  const previewDates = importPreview?.expenses.map((item) => item.occurredAt).sort() || [];
 
   return (
     <main className="app-shell">
@@ -340,10 +444,12 @@ export default function Home() {
               <div className="action-grid"><button type="button" onClick={exportJson}>导出完整备份</button><button type="button" onClick={exportCsv}>导出 CSV</button></div>
             </div>
             <div className="data-section">
-              <h3>导入记录</h3>
-              <p>支持本应用 JSON 备份，以及包含“交易时间”和“金额”列的微信或支付宝 CSV 账单；重复记录会自动跳过。</p>
-              <input ref={fileInput} className="sr-only" type="file" accept=".json,.csv,text/csv,application/json" onChange={importFile} />
-              <button className="outline-button" type="button" onClick={() => fileInput.current?.click()}>选择账单或备份文件</button>
+              <h3>导入官方账单</h3>
+              <p>支持微信、支付宝解压后的 CSV 明细，以及本应用 JSON 备份。导入前会先预览，收入、退款和失败交易不会计入消费。</p>
+              <input ref={fileInput} className="sr-only" type="file" accept=".json,.csv,.zip,.xls,.xlsx,text/csv,application/json" onChange={importFile} />
+              <button className="outline-button import-button" type="button" onClick={() => fileInput.current?.click()}>选择微信或支付宝账单</button>
+              <p className="import-hint">如果下载的是 ZIP，请先在 iPhone“文件”App 中轻点解压，再选择其中的 CSV。</p>
+              {latestImport && <div className="latest-import"><div><strong>最近导入</strong><span>{latestImport.filename} · {latestImport.count} 笔</span></div><button type="button" onClick={undoLatestImport}>撤销</button></div>}
             </div>
             <div className="data-section shortcut-help">
               <h3>快捷指令入口</h3>
@@ -351,6 +457,28 @@ export default function Home() {
               <code>?amount=38.6&amp;merchant=午餐&amp;channel=支付宝&amp;method=花呗</code>
             </div>
             <div className="data-section danger-zone"><button type="button" onClick={() => { if (window.confirm('确定清空本机的全部消费记录吗？请先导出备份。')) { setExpenses([]); setShowData(false); } }}>清空全部记录</button></div>
+          </section>
+        </div>
+      )}
+
+      {importPreview && (
+        <div className="sheet-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setImportPreview(null)}>
+          <section className="add-sheet import-sheet" role="dialog" aria-modal="true" aria-labelledby="import-title">
+            <div className="sheet-handle" />
+            <div className="section-head"><div><p className="eyebrow">账单预览</p><h2 id="import-title">确认导入</h2></div><button className="close-button" type="button" onClick={() => setImportPreview(null)}>取消</button></div>
+            <div className="import-file"><strong>{importPreview.filename}</strong><span>{importPreview.encoding} · 已识别官方账单结构</span></div>
+            <label className="channel-select">账单来源<select value={importPreview.channel} onChange={(event) => setImportPreview({ ...importPreview, channel: event.target.value as Channel })}><option>微信</option><option>支付宝</option></select></label>
+            <div className="import-stats">
+              <div><span>有效支出</span><strong>{importPreview.expenses.length} 笔</strong></div>
+              <div><span>支出合计</span><strong>{money(previewTotal)}</strong></div>
+              <div><span>排除记录</span><strong>{importPreview.ignored} 笔</strong></div>
+            </div>
+            <p className="date-range">范围：{previewDates[0]?.slice(0, 10)} 至 {previewDates.at(-1)?.slice(0, 10)}</p>
+            <div className="preview-list" aria-label="账单记录示例">
+              {importPreview.expenses.slice(0, 4).map((item) => <div key={item.id}><span><strong>{item.merchant}</strong><small>{item.occurredAt.replace('T', ' ')} · {item.category}</small></span><b>−{money(item.amount)}</b></div>)}
+            </div>
+            <p className="reconcile-note">正式导入时会按交易号去重；没有交易号时，会用渠道、金额和时间匹配已有手工记录。</p>
+            <button className="save-button import-confirm" type="button" onClick={confirmBillImport}>确认导入并自动去重</button>
           </section>
         </div>
       )}
