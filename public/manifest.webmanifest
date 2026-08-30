@@ -1,0 +1,13 @@
+{
+  "name": "消费有迹",
+  "short_name": "消费有迹",
+  "description": "只保存在本机的个人消费记录面板",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f5",
+  "theme_color": "#f4f7f5",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
