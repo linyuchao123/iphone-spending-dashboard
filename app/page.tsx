@@ -1,28 +1,15 @@
 'use client';
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import type { Channel, Expense, PaymentChoice, SyncChange, SyncOperation, SyncResponse } from '@/lib/sync-types';
 
-type Channel = '微信' | '支付宝';
 type Period = 'today' | 'week' | 'month';
-type PaymentChoice = { channel: Channel; method: string };
 type SyncStatus = 'connecting' | 'saving' | 'synced' | 'offline' | 'error';
-type Expense = {
-  id: string;
-  amount: number;
-  merchant: string;
-  category: string;
-  channel: Channel;
-  method: string;
-  occurredAt: string;
-  note?: string;
-  source?: 'manual' | 'import';
-  externalId?: string;
-  batchId?: string;
-  importedAt?: string;
-  sourceFile?: string;
-  demo?: boolean;
-};
-type Draft = Omit<Expense, 'id' | 'source' | 'demo'> & { amount: string };
+type Draft = Omit<Expense, 'id' | 'amount' | 'source' | 'demo'> & { amount: string };
+type SyncOperationInput =
+  | { kind: 'upsert'; expense: Expense }
+  | { kind: 'delete'; expenseId: string }
+  | { kind: 'settings'; settings: { budget: number; lastPayment: PaymentChoice } };
 type ImportPreview = {
   filename: string;
   channel: Channel;
@@ -33,6 +20,9 @@ type ImportPreview = {
 
 const STORAGE_KEY = 'spending-trace-expenses-v1';
 const SETTINGS_KEY = 'spending-trace-settings-v1';
+const OUTBOX_KEY = 'spending-trace-sync-outbox-v1';
+const REVISION_KEY = 'spending-trace-sync-revision-v1';
+const DEVICE_KEY = 'spending-trace-device-v1';
 const categories = ['餐饮', '交通', '购物', '日用', '娱乐', '住房', '医疗', '人情', '其他'];
 const methods = ['零钱', '花呗', '银行卡', '余额', '其他'];
 const paymentPresets: Array<PaymentChoice & { label: string; detail: string }> = [
@@ -128,7 +118,7 @@ function parseExpenseCsv(text: string, filename: string) {
   const headers = parseCsvLine(lines[headerIndex], delimiter).map((cell) => cell.replace(/[\s\uFEFF]/g, ''));
   const inferredChannel: Channel = /支付宝|alipay/i.test(filename + text.slice(0, 300)) ? '支付宝' : '微信';
   let ignored = 0;
-  const expenses = lines.slice(headerIndex + 1).map((line, index) => {
+  const expenses = lines.slice(headerIndex + 1).map((line, index): Expense | null => {
     const cells = parseCsvLine(line, delimiter);
     const row = Object.fromEntries(headers.map((header, cellIndex) => [header, cells[cellIndex] || '']));
     const direction = pick(row, ['收/支', '收支', '收支类型', '交易类型']);
@@ -186,6 +176,64 @@ function mergeExpenses(cloud: Expense[], local: Expense[]) {
   return merged;
 }
 
+function readOutbox() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(OUTBOX_KEY) || '[]');
+    return Array.isArray(value) ? value as SyncOperation[] : [];
+  } catch { return []; }
+}
+
+function writeOutbox(operations: SyncOperation[]) {
+  window.localStorage.setItem(OUTBOX_KEY, JSON.stringify(operations));
+}
+
+function deviceId() {
+  const saved = window.localStorage.getItem(DEVICE_KEY);
+  if (saved) return saved;
+  const created = crypto.randomUUID();
+  window.localStorage.setItem(DEVICE_KEY, created);
+  return created;
+}
+
+function operation(value: SyncOperationInput): SyncOperation {
+  return { ...value, operationId: crypto.randomUUID(), deviceId: deviceId(), queuedAt: new Date().toISOString() };
+}
+
+function coalesceOutbox(current: SyncOperation[], additions: SyncOperation[]) {
+  const next = [...current];
+  additions.forEach((addition) => {
+    if (addition.kind === 'settings') {
+      for (let index = next.length - 1; index >= 0; index -= 1) if (next[index].kind === 'settings') next.splice(index, 1);
+    } else {
+      const expenseId = addition.kind === 'upsert' ? addition.expense.id : addition.expenseId;
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        const item = next[index];
+        if (item.kind !== 'settings' && (item.kind === 'upsert' ? item.expense.id : item.expenseId) === expenseId) next.splice(index, 1);
+      }
+    }
+    next.push(addition);
+  });
+  return next;
+}
+
+function applyChanges(expenses: Expense[], changes: SyncChange[]) {
+  const byId = new Map(expenses.filter((item) => !item.demo).map((item) => [item.id, item]));
+  changes.forEach((change) => {
+    if (change.kind === 'delete') byId.delete(change.expenseId);
+    else byId.set(change.expense.id, change.expense);
+  });
+  return [...byId.values()];
+}
+
+function applyPending(expenses: Expense[], pending: SyncOperation[]) {
+  const byId = new Map(expenses.map((item) => [item.id, item]));
+  pending.forEach((item) => {
+    if (item.kind === 'delete') byId.delete(item.expenseId);
+    else if (item.kind === 'upsert') byId.set(item.expense.id, item.expense);
+  });
+  return [...byId.values()];
+}
+
 async function decodeCsv(file: File) {
   const buffer = await file.arrayBuffer();
   const candidates: Array<[string, string]> = [['UTF-8', new TextDecoder('utf-8').decode(buffer)]];
@@ -198,8 +246,8 @@ export default function Home() {
   const [period, setPeriod] = useState<Period>('month');
   const [budget, setBudget] = useState(5000);
   const [lastPayment, setLastPayment] = useState<PaymentChoice>({ channel: '微信', method: '零钱' });
-  const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('connecting');
+  const [pendingCount, setPendingCount] = useState(0);
   const [ready, setReady] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showData, setShowData] = useState(false);
@@ -207,9 +255,17 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(makeDraft());
   const [notice, setNotice] = useState('');
+  const [showInstallHelp, setShowInstallHelp] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isIos, setIsIos] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const lastCloudUpdate = useRef('');
-  const applyingCloud = useRef(false);
+  const expensesRef = useRef<Expense[]>([]);
+  const budgetRef = useRef(5000);
+  const paymentRef = useRef<PaymentChoice>({ channel: '微信', method: '零钱' });
+  const revisionRef = useRef(0);
+  const syncInFlight = useRef(false);
+  const cloudHydrated = useRef(false);
+  const syncRunner = useRef<() => Promise<void>>(async () => undefined);
 
   useEffect(() => {
     let active = true;
@@ -220,6 +276,12 @@ export default function Home() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         const settings = window.localStorage.getItem(SETTINGS_KEY);
         setExpenses(saved ? JSON.parse(saved) : demoData());
+        revisionRef.current = Number(window.localStorage.getItem(REVISION_KEY)) || 0;
+        setPendingCount(readOutbox().length);
+        deviceId();
+        const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
+        setIsStandalone(window.matchMedia('(display-mode: standalone)').matches || navigatorWithStandalone.standalone === true);
+        setIsIos(/iphone|ipad|ipod/i.test(navigator.userAgent));
         let savedPayment: PaymentChoice = { channel: '微信', method: '零钱' };
         if (settings) {
           const parsed = JSON.parse(settings);
@@ -248,102 +310,139 @@ export default function Home() {
   useEffect(() => {
     if (ready) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ budget, lastChannel: lastPayment.channel, lastMethod: lastPayment.method }));
   }, [budget, lastPayment, ready]);
+  useEffect(() => { expensesRef.current = expenses; }, [expenses]);
+  useEffect(() => { budgetRef.current = budget; }, [budget]);
+  useEffect(() => { paymentRef.current = lastPayment; }, [lastPayment]);
 
   useEffect(() => {
     if (!ready) return;
     let active = true;
 
-    async function startCloudSync() {
-      setSyncStatus('connecting');
+    function acceptSyncResult(result: SyncResponse, initial = false) {
+      const accepted = new Set(result.acceptedOperationIds || []);
+      let pending = readOutbox().filter((item) => !accepted.has(item.operationId));
+
+      if (initial) {
+        const cloudExpenses = result.state?.expenses || applyChanges([], result.changes);
+        const cloudIds = new Set(cloudExpenses.map((item) => item.id));
+        const cloudSignatures = new Set(cloudExpenses.map(signature));
+        const deletedIds = new Set(result.changes.filter((item) => item.kind === 'delete').map((item) => item.kind === 'delete' ? item.expenseId : ''));
+        const localUnique = expensesRef.current.filter((item) => !item.demo && !deletedIds.has(item.id) && !cloudIds.has(item.id) && !cloudSignatures.has(signature(item)));
+        const migrationOperations = localUnique.map((expense) => operation({ kind: 'upsert', expense }));
+        if (result.revision === 0) migrationOperations.push(operation({ kind: 'settings', settings: { budget: budgetRef.current, lastPayment: paymentRef.current } }));
+        if (migrationOperations.length) pending = coalesceOutbox(pending, migrationOperations);
+        const merged = mergeExpenses(cloudExpenses, expensesRef.current.filter((item) => !deletedIds.has(item.id)));
+        const next = applyPending(merged, pending);
+        expensesRef.current = next;
+        setExpenses(next);
+      } else {
+        setExpenses((current) => {
+          const next = applyPending(applyChanges(current, result.changes), pending);
+          expensesRef.current = next;
+          return next;
+        });
+      }
+
+      writeOutbox(pending);
+      const pendingSettings = [...pending].reverse().find((item) => item.kind === 'settings');
+      if (pendingSettings?.kind === 'settings') {
+        budgetRef.current = pendingSettings.settings.budget;
+        paymentRef.current = pendingSettings.settings.lastPayment;
+        setBudget(pendingSettings.settings.budget);
+        setLastPayment(pendingSettings.settings.lastPayment);
+      } else {
+        budgetRef.current = result.settings.budget;
+        paymentRef.current = result.settings.lastPayment;
+        setBudget(result.settings.budget);
+        setLastPayment(result.settings.lastPayment);
+      }
+      revisionRef.current = result.revision;
+      window.localStorage.setItem(REVISION_KEY, String(result.revision));
+      setPendingCount(pending.length);
+    }
+
+    async function runSync() {
+      if (syncInFlight.current) {
+        window.setTimeout(() => syncRunner.current(), 300);
+        return;
+      }
+      syncInFlight.current = true;
+      let pulled = false;
       try {
-        const cloudResponse = await fetch('/api/sync', { cache: 'no-store' });
-        if (!cloudResponse.ok) throw new Error('cloud unavailable');
-        const cloud = await cloudResponse.json();
-        let nextExpenses = expenses.filter((item) => !item.demo);
-        let nextBudget = budget;
-        let nextPayment = lastPayment;
-        if (cloud.state) {
-          nextExpenses = mergeExpenses(cloud.state.expenses || [], nextExpenses);
-          nextBudget = Number(cloud.state.budget) || budget;
-          if (cloud.state.lastPayment) nextPayment = cloud.state.lastPayment;
+        if (!cloudHydrated.current) {
+          setSyncStatus('connecting');
+          const response = await fetch('/api/sync?since=0', { cache: 'no-store' });
+          if (!response.ok) throw new Error('cloud unavailable');
+          acceptSyncResult(await response.json() as SyncResponse, true);
+          cloudHydrated.current = true;
+          pulled = true;
         }
 
-        const saveResponse = await fetch('/api/sync', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ version: 1, budget: nextBudget, expenses: nextExpenses, lastPayment: nextPayment }),
-        });
-        if (!saveResponse.ok) throw new Error('cloud save failed');
-        const saved = await saveResponse.json();
+        let rounds = 0;
+        while (active && readOutbox().length && rounds < 20) {
+          rounds += 1;
+          setSyncStatus('saving');
+          const pending = readOutbox();
+          const response = await fetch('/api/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ since: revisionRef.current, operations: pending.slice(0, 100) }),
+          });
+          if (!response.ok) throw new Error('cloud save failed');
+          acceptSyncResult(await response.json() as SyncResponse);
+          pulled = true;
+        }
+
+        if (!pulled) {
+          const response = await fetch(`/api/sync?since=${revisionRef.current}`, { cache: 'no-store' });
+          if (!response.ok) throw new Error('cloud unavailable');
+          acceptSyncResult(await response.json() as SyncResponse);
+        }
         if (!active) return;
-        applyingCloud.current = true;
-        setExpenses(nextExpenses);
-        setBudget(nextBudget);
-        setLastPayment(nextPayment);
-        lastCloudUpdate.current = saved.updatedAt;
-        setSyncReady(true);
-        setSyncStatus('synced');
+        const remaining = readOutbox().length;
+        setPendingCount(remaining);
+        setSyncStatus(remaining ? 'saving' : 'synced');
+        if (remaining) window.setTimeout(() => syncRunner.current(), 400);
       } catch {
         if (!active) return;
+        const remaining = readOutbox().length;
+        setPendingCount(remaining);
         setSyncStatus(navigator.onLine ? 'error' : 'offline');
-      }
+      } finally { syncInFlight.current = false; }
     }
 
-    startCloudSync();
-    return () => { active = false; };
-  // The first ready render contains the complete local snapshot used for migration.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
-
-  useEffect(() => {
-    if (!ready || !syncReady) return;
-    if (applyingCloud.current) { applyingCloud.current = false; return; }
-    setSyncStatus('saving');
-    const timer = window.setTimeout(async () => {
-      try {
-        const response = await fetch('/api/sync', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ version: 1, budget, expenses: expenses.filter((item) => !item.demo), lastPayment }),
-        });
-        if (!response.ok) throw new Error('cloud save failed');
-        const saved = await response.json();
-        lastCloudUpdate.current = saved.updatedAt;
-        setSyncStatus('synced');
-      } catch { setSyncStatus(navigator.onLine ? 'error' : 'offline'); }
-    }, 650);
-    return () => window.clearTimeout(timer);
-  }, [budget, expenses, lastPayment, ready, syncReady]);
-
-  useEffect(() => {
-    if (!syncReady) return;
-    let active = true;
-    async function pullCloud() {
-      try {
-        const response = await fetch('/api/sync', { cache: 'no-store' });
-        if (!response.ok) throw new Error('cloud unavailable');
-        const cloud = await response.json();
-        if (!active || !cloud.state || !cloud.updatedAt || cloud.updatedAt <= lastCloudUpdate.current) return;
-        applyingCloud.current = true;
-        lastCloudUpdate.current = cloud.updatedAt;
-        setExpenses(cloud.state.expenses || []);
-        setBudget(Number(cloud.state.budget) || 5000);
-        if (cloud.state.lastPayment) setLastPayment(cloud.state.lastPayment);
-        setSyncStatus('synced');
-      } catch { if (active) setSyncStatus(navigator.onLine ? 'error' : 'offline'); }
-    }
-    const interval = window.setInterval(pullCloud, 15_000);
-    const onFocus = () => pullCloud();
-    const onVisibility = () => { if (document.visibilityState === 'visible') pullCloud(); };
+    syncRunner.current = runSync;
+    runSync();
+    const interval = window.setInterval(runSync, 15_000);
+    const onOnline = () => runSync();
+    const onOffline = () => setSyncStatus('offline');
+    const onFocus = () => runSync();
+    const onVisibility = () => { if (document.visibilityState === 'visible') runSync(); };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       active = false;
       window.clearInterval(interval);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [syncReady]);
+  }, [ready]);
+
+  function queueOperations(additions: SyncOperation[]) {
+    const next = coalesceOutbox(readOutbox(), additions);
+    writeOutbox(next);
+    setPendingCount(next.length);
+    setSyncStatus(navigator.onLine ? 'saving' : 'offline');
+    if (navigator.onLine) window.setTimeout(() => syncRunner.current(), 0);
+  }
+
+  function queueSettings(nextBudget: number, nextPayment: PaymentChoice) {
+    queueOperations([operation({ kind: 'settings', settings: { budget: nextBudget, lastPayment: nextPayment } })]);
+  }
 
   const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period]);
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.amount, 0), [visible]);
@@ -390,14 +489,25 @@ export default function Home() {
     event.preventDefault();
     const amount = Number(draft.amount);
     if (!Number.isFinite(amount) || amount <= 0) { setNotice('请输入正确的消费金额'); return; }
+    let savedExpense: Expense;
     if (editingId) {
-      setExpenses((current) => current.map((item) => item.id === editingId ? { ...item, ...draft, amount, demo: false } : item));
+      const original = expensesRef.current.find((item) => item.id === editingId);
+      savedExpense = { ...original, ...draft, id: editingId, amount, source: original?.source || 'manual', demo: false };
+      setExpenses((current) => current.map((item) => item.id === editingId ? savedExpense : item));
       setNotice('记录已更新');
     } else {
-      setExpenses((current) => [{ ...draft, id: crypto.randomUUID(), amount, source: 'manual' }, ...current]);
-      setNotice('已保存到本机');
+      savedExpense = { ...draft, id: crypto.randomUUID(), amount, source: 'manual' };
+      setExpenses((current) => [savedExpense, ...current]);
+      setNotice(navigator.onLine ? '已保存，正在同步' : '已离线保存，联网后自动同步');
     }
-    setLastPayment({ channel: draft.channel, method: draft.method });
+    const nextPayment = { channel: draft.channel, method: draft.method };
+    expensesRef.current = editingId ? expensesRef.current.map((item) => item.id === editingId ? savedExpense : item) : [savedExpense, ...expensesRef.current];
+    paymentRef.current = nextPayment;
+    setLastPayment(nextPayment);
+    queueOperations([
+      operation({ kind: 'upsert', expense: savedExpense }),
+      operation({ kind: 'settings', settings: { budget: budgetRef.current, lastPayment: nextPayment } }),
+    ]);
     setShowAdd(false);
     setTimeout(() => setNotice(''), 2200);
   }
@@ -405,8 +515,10 @@ export default function Home() {
   function removeExpense() {
     if (!editingId || !window.confirm('确定删除这条消费记录吗？')) return;
     setExpenses((current) => current.filter((item) => item.id !== editingId));
+    expensesRef.current = expensesRef.current.filter((item) => item.id !== editingId);
+    queueOperations([operation({ kind: 'delete', expenseId: editingId })]);
     setShowAdd(false);
-    setNotice('记录已删除');
+    setNotice(navigator.onLine ? '记录已删除，正在同步' : '已离线删除，联网后自动同步');
     setTimeout(() => setNotice(''), 2200);
   }
 
@@ -438,10 +550,17 @@ export default function Home() {
         const parsed = JSON.parse(text);
         const incoming: Expense[] = Array.isArray(parsed) ? parsed : parsed.expenses;
         if (!Array.isArray(incoming)) throw new Error('备份中没有消费记录');
-        if (parsed.budget) setBudget(Number(parsed.budget));
+        if (parsed.budget) {
+          const nextBudget = Number(parsed.budget);
+          budgetRef.current = nextBudget;
+          setBudget(nextBudget);
+          queueSettings(nextBudget, paymentRef.current);
+        }
         const known = new Set(expenses.map(signature));
         const unique = incoming.filter((item) => !known.has(signature(item)));
         setExpenses((current) => [...unique, ...current]);
+        expensesRef.current = [...unique, ...expensesRef.current];
+        queueOperations(unique.map((expense) => operation({ kind: 'upsert', expense })));
         setNotice(`备份已恢复：新增 ${unique.length} 笔记录`);
         setShowData(false);
       } else {
@@ -473,6 +592,8 @@ export default function Home() {
       return true;
     });
     setExpenses((current) => [...additions, ...current]);
+    expensesRef.current = [...additions, ...expensesRef.current];
+    queueOperations(additions.map((expense) => operation({ kind: 'upsert', expense })));
     setImportPreview(null);
     setNotice(`导入完成：新增 ${additions.length} 笔，匹配或跳过 ${duplicates} 笔`);
     setTimeout(() => setNotice(''), 4200);
@@ -480,8 +601,36 @@ export default function Home() {
 
   function undoLatestImport() {
     if (!latestImport || !window.confirm(`撤销“${latestImport.filename}”导入的 ${latestImport.count} 笔记录吗？`)) return;
+    const removed = expensesRef.current.filter((item) => item.batchId === latestImport.batchId);
     setExpenses((current) => current.filter((item) => item.batchId !== latestImport.batchId));
+    expensesRef.current = expensesRef.current.filter((item) => item.batchId !== latestImport.batchId);
+    queueOperations(removed.map((item) => operation({ kind: 'delete', expenseId: item.id })));
     setNotice('最近一次账单导入已撤销');
+    setTimeout(() => setNotice(''), 2600);
+  }
+
+  function handleSyncChip() {
+    setShowData(true);
+    if (syncStatus === 'offline' || syncStatus === 'error') {
+      setSyncStatus('connecting');
+      syncRunner.current();
+    }
+  }
+
+  function changeBudget(value: number) {
+    budgetRef.current = value;
+    setBudget(value);
+    queueSettings(value, paymentRef.current);
+  }
+
+  function clearAllExpenses() {
+    if (!window.confirm('确定清空全部消费记录吗？请先导出备份。')) return;
+    const existing = expensesRef.current.filter((item) => !item.demo);
+    expensesRef.current = [];
+    setExpenses([]);
+    queueOperations(existing.map((item) => operation({ kind: 'delete', expenseId: item.id })));
+    setShowData(false);
+    setNotice('全部记录已清空，正在同步');
     setTimeout(() => setNotice(''), 2600);
   }
 
@@ -489,13 +638,21 @@ export default function Home() {
   const maxTrend = Math.max(...trend.map((day) => day.value), 1);
   const previewTotal = importPreview?.expenses.reduce((sum, item) => sum + item.amount, 0) || 0;
   const previewDates = importPreview?.expenses.map((item) => item.occurredAt).sort() || [];
-  const syncLabel = syncStatus === 'synced' ? '已同步' : syncStatus === 'saving' ? '同步中' : syncStatus === 'connecting' ? '连接云端' : syncStatus === 'offline' ? '离线缓存' : '同步失败';
+  const syncLabel = syncStatus === 'synced'
+    ? '已同步'
+    : syncStatus === 'saving'
+      ? pendingCount ? `同步中 · ${pendingCount}` : '同步中'
+      : syncStatus === 'connecting'
+        ? '连接云端'
+        : syncStatus === 'offline'
+          ? pendingCount ? `离线 · 待同步 ${pendingCount}` : '离线缓存'
+          : pendingCount ? `同步失败 · ${pendingCount}` : '同步失败';
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div><p className="eyebrow">云端账本</p><h1>消费有迹</h1></div>
-        <button className={`privacy-chip sync-${syncStatus}`} type="button" onClick={() => setShowData(true)}>{syncLabel} · 管理</button>
+        <button className={`privacy-chip sync-${syncStatus}`} type="button" onClick={handleSyncChip}>{syncLabel}</button>
       </header>
 
       <nav className="period-tabs" aria-label="统计周期">
@@ -589,10 +746,19 @@ export default function Home() {
         <div className="sheet-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowData(false)}>
           <section className="add-sheet data-sheet" role="dialog" aria-modal="true" aria-labelledby="data-title">
             <div className="sheet-handle" />
-            <div className="section-head"><div><p className="eyebrow">设置与备份</p><h2 id="data-title">本机数据</h2></div><button className="close-button" type="button" onClick={() => setShowData(false)}>完成</button></div>
-            <div className="data-section">
-              <label>每月预算<input type="number" inputMode="decimal" min="0" step="100" value={budget} onChange={(event) => setBudget(Number(event.target.value) || 0)} /></label>
+            <div className="section-head"><div><p className="eyebrow">设置与备份</p><h2 id="data-title">同步与数据</h2></div><button className="close-button" type="button" onClick={() => setShowData(false)}>完成</button></div>
+            <div className="sync-card">
+              <div><strong>{syncLabel}</strong><span>{pendingCount ? `本机还有 ${pendingCount} 项更改等待上传` : '手机与电脑使用同一份云端账本'}</span></div>
+              {(syncStatus === 'offline' || syncStatus === 'error') && <button type="button" onClick={() => { setSyncStatus('connecting'); syncRunner.current(); }}>重新同步</button>}
             </div>
+            <div className="data-section">
+              <label>每月预算<input type="number" inputMode="decimal" min="0" step="100" value={budget} onChange={(event) => changeBudget(Number(event.target.value) || 0)} /></label>
+            </div>
+            {isIos && !isStandalone && <div className="data-section install-section">
+              <h3>添加到 iPhone 主屏幕</h3>
+              <p>安装后会像普通 App 一样独立打开，不再显示 Safari 地址栏；账单仍与电脑自动同步。</p>
+              <button className="outline-button install-button" type="button" onClick={() => setShowInstallHelp(true)}>查看安装步骤</button>
+            </div>}
             <div className="data-section">
               <h3>备份与导出</h3>
               <p>记录会在使用同一账号打开的手机和电脑间自动同步，同时保留本机缓存。仍建议每月导出一次完整备份。</p>
@@ -611,7 +777,22 @@ export default function Home() {
               <p>一个快捷指令就够了：只传金额和用途，付款方式会沿用你上一次的选择，也可以在保存前点一下切换。</p>
               <code>?amount=38.6&amp;merchant=午餐</code>
             </div>
-            <div className="data-section danger-zone"><button type="button" onClick={() => { if (window.confirm('确定清空本机的全部消费记录吗？请先导出备份。')) { setExpenses([]); setShowData(false); } }}>清空全部记录</button></div>
+            <div className="data-section danger-zone"><button type="button" onClick={clearAllExpenses}>清空全部记录</button></div>
+          </section>
+        </div>
+      )}
+
+      {showInstallHelp && (
+        <div className="sheet-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowInstallHelp(false)}>
+          <section className="add-sheet install-sheet" role="dialog" aria-modal="true" aria-labelledby="install-title">
+            <div className="sheet-handle" />
+            <div className="section-head"><div><p className="eyebrow">iPhone 网页 App</p><h2 id="install-title">添加“消费有迹”到主屏幕</h2></div><button className="close-button" type="button" onClick={() => setShowInstallHelp(false)}>完成</button></div>
+            <ol className="install-steps">
+              <li><b>1</b><span>请用 Safari 打开当前页面，轻点底部的“共享”按钮。</span></li>
+              <li><b>2</b><span>向下滑动并选择“添加到主屏幕”。</span></li>
+              <li><b>3</b><span>打开“作为网页 App 打开”，然后轻点右上角“添加”。</span></li>
+            </ol>
+            <p className="install-note">首次从桌面图标打开时，如果出现登录页面，请使用电脑端相同的账号登录。看到右上角“已同步”后即可正常使用。</p>
           </section>
         </div>
       )}

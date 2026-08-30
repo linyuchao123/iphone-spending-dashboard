@@ -1,5 +1,5 @@
-const CACHE = 'spending-trace-shell-v3';
-const CORE = ['/', '/manifest.webmanifest', '/favicon.svg'];
+const CACHE = 'spending-trace-shell-v4';
+const CORE = ['/', '/manifest.webmanifest', '/favicon.svg', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-512-maskable.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)));
