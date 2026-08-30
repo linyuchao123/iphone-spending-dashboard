@@ -14,6 +14,8 @@ h1,h2,p { margin-top:0; }
 h1 { margin-bottom:0; font-size:28px; line-height:1.15; font-weight:650; letter-spacing:-.03em; }
 h2 { margin-bottom:0; font-size:18px; font-weight:650; letter-spacing:-.02em; }
 .privacy-chip { padding:7px 10px; border:0; border-radius:999px; background:var(--green-soft); color:var(--green); font-size:12px; font-weight:600; }
+.privacy-chip.sync-saving,.privacy-chip.sync-connecting { color:#80611b; background:#fff3d8; }
+.privacy-chip.sync-offline,.privacy-chip.sync-error { color:#9a4141; background:#fce8e8; }
 .period-tabs { display:flex; gap:7px; margin:-6px 0 14px; }
 .period-tabs button { min-height:40px; padding:7px 14px; border:1px solid var(--line); border-radius:11px; background:transparent; color:var(--muted); font-weight:600; }
 .period-tabs button[aria-pressed="true"] { border-color:var(--text); background:var(--text); color:var(--surface); }

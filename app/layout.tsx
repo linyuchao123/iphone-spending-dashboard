@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: '消费有迹',
-  description: '只保存在本机的个人消费记录面板',
+  description: '在 iPhone 和电脑间自动同步的个人消费记录面板',
   manifest: '/manifest.webmanifest',
   appleWebApp: { capable: true, statusBarStyle: 'default', title: '消费有迹' },
   icons: { icon: '/favicon.svg', apple: '/favicon.svg' },

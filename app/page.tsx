@@ -5,6 +5,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 're
 type Channel = '微信' | '支付宝';
 type Period = 'today' | 'week' | 'month';
 type PaymentChoice = { channel: Channel; method: string };
+type SyncStatus = 'connecting' | 'saving' | 'synced' | 'offline' | 'error';
 type Expense = {
   id: string;
   amount: number;
@@ -170,6 +171,21 @@ function isLikelyManualDuplicate(a: Expense, b: Expense) {
   return Math.abs(new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime()) <= 15 * 60_000;
 }
 
+function mergeExpenses(cloud: Expense[], local: Expense[]) {
+  const merged = [...cloud];
+  const ids = new Set(cloud.map((item) => item.id));
+  const signatures = new Set(cloud.map(signature));
+  local.filter((item) => !item.demo).forEach((item) => {
+    const key = signature(item);
+    if (!ids.has(item.id) && !signatures.has(key)) {
+      merged.push(item);
+      ids.add(item.id);
+      signatures.add(key);
+    }
+  });
+  return merged;
+}
+
 async function decodeCsv(file: File) {
   const buffer = await file.arrayBuffer();
   const candidates: Array<[string, string]> = [['UTF-8', new TextDecoder('utf-8').decode(buffer)]];
@@ -182,6 +198,8 @@ export default function Home() {
   const [period, setPeriod] = useState<Period>('month');
   const [budget, setBudget] = useState(5000);
   const [lastPayment, setLastPayment] = useState<PaymentChoice>({ channel: '微信', method: '零钱' });
+  const [syncReady, setSyncReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('connecting');
   const [ready, setReady] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showData, setShowData] = useState(false);
@@ -190,6 +208,8 @@ export default function Home() {
   const [draft, setDraft] = useState<Draft>(makeDraft());
   const [notice, setNotice] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
+  const lastCloudUpdate = useRef('');
+  const applyingCloud = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -228,6 +248,102 @@ export default function Home() {
   useEffect(() => {
     if (ready) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ budget, lastChannel: lastPayment.channel, lastMethod: lastPayment.method }));
   }, [budget, lastPayment, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    let active = true;
+
+    async function startCloudSync() {
+      setSyncStatus('connecting');
+      try {
+        const cloudResponse = await fetch('/api/sync', { cache: 'no-store' });
+        if (!cloudResponse.ok) throw new Error('cloud unavailable');
+        const cloud = await cloudResponse.json();
+        let nextExpenses = expenses.filter((item) => !item.demo);
+        let nextBudget = budget;
+        let nextPayment = lastPayment;
+        if (cloud.state) {
+          nextExpenses = mergeExpenses(cloud.state.expenses || [], nextExpenses);
+          nextBudget = Number(cloud.state.budget) || budget;
+          if (cloud.state.lastPayment) nextPayment = cloud.state.lastPayment;
+        }
+
+        const saveResponse = await fetch('/api/sync', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: 1, budget: nextBudget, expenses: nextExpenses, lastPayment: nextPayment }),
+        });
+        if (!saveResponse.ok) throw new Error('cloud save failed');
+        const saved = await saveResponse.json();
+        if (!active) return;
+        applyingCloud.current = true;
+        setExpenses(nextExpenses);
+        setBudget(nextBudget);
+        setLastPayment(nextPayment);
+        lastCloudUpdate.current = saved.updatedAt;
+        setSyncReady(true);
+        setSyncStatus('synced');
+      } catch {
+        if (!active) return;
+        setSyncStatus(navigator.onLine ? 'error' : 'offline');
+      }
+    }
+
+    startCloudSync();
+    return () => { active = false; };
+  // The first ready render contains the complete local snapshot used for migration.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  useEffect(() => {
+    if (!ready || !syncReady) return;
+    if (applyingCloud.current) { applyingCloud.current = false; return; }
+    setSyncStatus('saving');
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch('/api/sync', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: 1, budget, expenses: expenses.filter((item) => !item.demo), lastPayment }),
+        });
+        if (!response.ok) throw new Error('cloud save failed');
+        const saved = await response.json();
+        lastCloudUpdate.current = saved.updatedAt;
+        setSyncStatus('synced');
+      } catch { setSyncStatus(navigator.onLine ? 'error' : 'offline'); }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [budget, expenses, lastPayment, ready, syncReady]);
+
+  useEffect(() => {
+    if (!syncReady) return;
+    let active = true;
+    async function pullCloud() {
+      try {
+        const response = await fetch('/api/sync', { cache: 'no-store' });
+        if (!response.ok) throw new Error('cloud unavailable');
+        const cloud = await response.json();
+        if (!active || !cloud.state || !cloud.updatedAt || cloud.updatedAt <= lastCloudUpdate.current) return;
+        applyingCloud.current = true;
+        lastCloudUpdate.current = cloud.updatedAt;
+        setExpenses(cloud.state.expenses || []);
+        setBudget(Number(cloud.state.budget) || 5000);
+        if (cloud.state.lastPayment) setLastPayment(cloud.state.lastPayment);
+        setSyncStatus('synced');
+      } catch { if (active) setSyncStatus(navigator.onLine ? 'error' : 'offline'); }
+    }
+    const interval = window.setInterval(pullCloud, 15_000);
+    const onFocus = () => pullCloud();
+    const onVisibility = () => { if (document.visibilityState === 'visible') pullCloud(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [syncReady]);
 
   const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period]);
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.amount, 0), [visible]);
@@ -373,12 +489,13 @@ export default function Home() {
   const maxTrend = Math.max(...trend.map((day) => day.value), 1);
   const previewTotal = importPreview?.expenses.reduce((sum, item) => sum + item.amount, 0) || 0;
   const previewDates = importPreview?.expenses.map((item) => item.occurredAt).sort() || [];
+  const syncLabel = syncStatus === 'synced' ? '已同步' : syncStatus === 'saving' ? '同步中' : syncStatus === 'connecting' ? '连接云端' : syncStatus === 'offline' ? '离线缓存' : '同步失败';
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div><p className="eyebrow">本地账本</p><h1>消费有迹</h1></div>
-        <button className="privacy-chip" type="button" onClick={() => setShowData(true)}>仅此设备 · 管理</button>
+        <div><p className="eyebrow">云端账本</p><h1>消费有迹</h1></div>
+        <button className={`privacy-chip sync-${syncStatus}`} type="button" onClick={() => setShowData(true)}>{syncLabel} · 管理</button>
       </header>
 
       <nav className="period-tabs" aria-label="统计周期">
@@ -478,7 +595,7 @@ export default function Home() {
             </div>
             <div className="data-section">
               <h3>备份与导出</h3>
-              <p>记录只存在当前浏览器。建议每月导出一次完整备份。</p>
+              <p>记录会在使用同一账号打开的手机和电脑间自动同步，同时保留本机缓存。仍建议每月导出一次完整备份。</p>
               <div className="action-grid"><button type="button" onClick={exportJson}>导出完整备份</button><button type="button" onClick={exportCsv}>导出 CSV</button></div>
             </div>
             <div className="data-section">
