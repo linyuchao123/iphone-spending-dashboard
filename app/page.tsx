@@ -4,6 +4,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 're
 
 type Channel = '微信' | '支付宝';
 type Period = 'today' | 'week' | 'month';
+type PaymentChoice = { channel: Channel; method: string };
 type Expense = {
   id: string;
   amount: number;
@@ -33,14 +34,20 @@ const STORAGE_KEY = 'spending-trace-expenses-v1';
 const SETTINGS_KEY = 'spending-trace-settings-v1';
 const categories = ['餐饮', '交通', '购物', '日用', '娱乐', '住房', '医疗', '人情', '其他'];
 const methods = ['零钱', '花呗', '银行卡', '余额', '其他'];
+const paymentPresets: Array<PaymentChoice & { label: string; detail: string }> = [
+  { channel: '微信', method: '零钱', label: '微信零钱', detail: '微信余额' },
+  { channel: '微信', method: '银行卡', label: '微信银行卡', detail: '微信绑卡' },
+  { channel: '支付宝', method: '花呗', label: '支付宝花呗', detail: '花呗付款' },
+  { channel: '支付宝', method: '银行卡', label: '支付宝银行卡', detail: '支付宝绑卡' },
+];
 
 function localDateTime(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 16);
 }
 
-function makeDraft(): Draft {
-  return { amount: '', merchant: '', category: '餐饮', channel: '微信', method: '零钱', occurredAt: localDateTime(), note: '' };
+function makeDraft(payment: PaymentChoice = { channel: '微信', method: '零钱' }): Draft {
+  return { amount: '', merchant: '', category: '餐饮', channel: payment.channel, method: payment.method, occurredAt: localDateTime(), note: '' };
 }
 
 function demoData(): Expense[] {
@@ -174,6 +181,7 @@ export default function Home() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [period, setPeriod] = useState<Period>('month');
   const [budget, setBudget] = useState(5000);
+  const [lastPayment, setLastPayment] = useState<PaymentChoice>({ channel: '微信', method: '零钱' });
   const [ready, setReady] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [showData, setShowData] = useState(false);
@@ -192,23 +200,34 @@ export default function Home() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         const settings = window.localStorage.getItem(SETTINGS_KEY);
         setExpenses(saved ? JSON.parse(saved) : demoData());
-        if (settings) setBudget(Number(JSON.parse(settings).budget) || 5000);
+        let savedPayment: PaymentChoice = { channel: '微信', method: '零钱' };
+        if (settings) {
+          const parsed = JSON.parse(settings);
+          setBudget(Number(parsed.budget) || 5000);
+          if ((parsed.lastChannel === '微信' || parsed.lastChannel === '支付宝') && typeof parsed.lastMethod === 'string') {
+            savedPayment = { channel: parsed.lastChannel, method: parsed.lastMethod };
+            setLastPayment(savedPayment);
+          }
+        }
+        const params = new URLSearchParams(window.location.search);
+        const amount = params.get('amount');
+        if (amount) {
+          const channel = params.get('channel') === '支付宝' ? '支付宝' : params.get('channel') === '微信' ? '微信' : savedPayment.channel;
+          const method = params.get('method') || savedPayment.method;
+          setDraft({ ...makeDraft({ channel, method }), amount, merchant: params.get('merchant') || '' });
+          setShowAdd(true);
+          window.history.replaceState({}, '', window.location.pathname);
+        }
       } catch { setExpenses(demoData()); }
       setReady(true);
-
-      const params = new URLSearchParams(window.location.search);
-      const amount = params.get('amount');
-      if (amount) {
-        setDraft({ ...makeDraft(), amount, merchant: params.get('merchant') || '', channel: params.get('channel') === '支付宝' ? '支付宝' : '微信', method: params.get('method') || '银行卡' });
-        setShowAdd(true);
-        window.history.replaceState({}, '', window.location.pathname);
-      }
     });
     return () => { active = false; };
   }, []);
 
   useEffect(() => { if (ready) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses)); }, [expenses, ready]);
-  useEffect(() => { if (ready) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ budget })); }, [budget, ready]);
+  useEffect(() => {
+    if (ready) window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ budget, lastChannel: lastPayment.channel, lastMethod: lastPayment.method }));
+  }, [budget, lastPayment, ready]);
 
   const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period]);
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.amount, 0), [visible]);
@@ -244,8 +263,12 @@ export default function Home() {
     return { batchId, filename: rows[0].sourceFile || '官方账单', importedAt: rows[0].importedAt || '', count: rows.length };
   }, [expenses]);
 
-  function openNew() { setEditingId(null); setDraft(makeDraft()); setShowAdd(true); }
+  function openNew() { setEditingId(null); setDraft(makeDraft(lastPayment)); setShowAdd(true); }
   function openEdit(item: Expense) { setEditingId(item.id); setDraft({ amount: String(item.amount), merchant: item.merchant, category: item.category, channel: item.channel, method: item.method, occurredAt: item.occurredAt, note: item.note || '' }); setShowAdd(true); }
+
+  function choosePayment(payment: PaymentChoice) {
+    setDraft((current) => ({ ...current, channel: payment.channel, method: payment.method }));
+  }
 
   function saveExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -258,6 +281,7 @@ export default function Home() {
       setExpenses((current) => [{ ...draft, id: crypto.randomUUID(), amount, source: 'manual' }, ...current]);
       setNotice('已保存到本机');
     }
+    setLastPayment({ channel: draft.channel, method: draft.method });
     setShowAdd(false);
     setTimeout(() => setNotice(''), 2200);
   }
@@ -414,16 +438,30 @@ export default function Home() {
             <form onSubmit={saveExpense}>
               <label>金额<input className="amount-input" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} type="number" inputMode="decimal" min="0.01" step="0.01" placeholder="0.00" autoFocus required /></label>
               <label>商家或用途<input value={draft.merchant} onChange={(event) => setDraft({ ...draft, merchant: event.target.value })} type="text" placeholder="例如：午餐" /></label>
-              <div className="form-row">
-                <label>渠道<select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value as Channel })}><option>微信</option><option>支付宝</option></select></label>
-                <label>付款方式<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}>{methods.map((method) => <option key={method}>{method}</option>)}</select></label>
-              </div>
-              <div className="form-row">
-                <label>分类<select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>
-                <label>时间<input value={draft.occurredAt} onChange={(event) => setDraft({ ...draft, occurredAt: event.target.value })} type="datetime-local" /></label>
-              </div>
-              <label>备注（可选）<input value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} type="text" placeholder="例如：和朋友聚餐" /></label>
-              <button className="save-button" type="submit">{editingId ? '保存修改' : '保存到本机'}</button>
+              <fieldset className="payment-picker">
+                <legend>付款方式 <span>会记住本次选择</span></legend>
+                <div className="payment-grid">
+                  {paymentPresets.map((payment) => {
+                    const selected = draft.channel === payment.channel && draft.method === payment.method;
+                    return <button key={payment.label} type="button" aria-pressed={selected} onClick={() => choosePayment(payment)}><strong>{payment.label}</strong><small>{payment.detail}</small></button>;
+                  })}
+                </div>
+              </fieldset>
+              <button className="save-button" type="submit">{editingId ? '保存修改' : `保存 · ${draft.channel}${draft.method}`}</button>
+              <details className="advanced-fields">
+                <summary>更多信息（分类、时间、备注）</summary>
+                <div className="advanced-fields-body">
+                  <div className="form-row">
+                    <label>渠道<select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value as Channel })}><option>微信</option><option>支付宝</option></select></label>
+                    <label>付款方式<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}>{methods.map((method) => <option key={method}>{method}</option>)}</select></label>
+                  </div>
+                  <div className="form-row">
+                    <label>分类<select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>
+                    <label>时间<input value={draft.occurredAt} onChange={(event) => setDraft({ ...draft, occurredAt: event.target.value })} type="datetime-local" /></label>
+                  </div>
+                  <label>备注（可选）<input value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} type="text" placeholder="例如：和朋友聚餐" /></label>
+                </div>
+              </details>
               {editingId && <button className="delete-button" type="button" onClick={removeExpense}>删除这条记录</button>}
             </form>
           </section>
@@ -453,8 +491,8 @@ export default function Home() {
             </div>
             <div className="data-section shortcut-help">
               <h3>快捷指令入口</h3>
-              <p>以后可以让快捷指令打开下面这种地址，金额和付款方式会自动填入，再确认保存：</p>
-              <code>?amount=38.6&amp;merchant=午餐&amp;channel=支付宝&amp;method=花呗</code>
+              <p>一个快捷指令就够了：只传金额和用途，付款方式会沿用你上一次的选择，也可以在保存前点一下切换。</p>
+              <code>?amount=38.6&amp;merchant=午餐</code>
             </div>
             <div className="data-section danger-zone"><button type="button" onClick={() => { if (window.confirm('确定清空本机的全部消费记录吗？请先导出备份。')) { setExpenses([]); setShowData(false); } }}>清空全部记录</button></div>
           </section>

@@ -70,6 +70,18 @@ label { display:grid; flex:1; gap:7px; color:var(--muted); font-size:13px; }
 input,select { width:100%; min-height:48px; padding:11px 12px; border:1px solid var(--line); border-radius:12px; outline:none; background:var(--page); color:var(--text); font-size:16px; }
 input:focus,select:focus { border-color:var(--green); box-shadow:0 0 0 3px var(--green-soft); }
 .amount-input { min-height:64px; font-size:30px; font-weight:650; font-variant-numeric:tabular-nums; }
+.payment-picker { min-width:0; margin:0; padding:0; border:0; }
+.payment-picker legend { width:100%; margin-bottom:8px; color:var(--muted); font-size:13px; }
+.payment-picker legend span { float:right; font-size:11px; }
+.payment-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+.payment-grid button { min-width:0; min-height:58px; padding:9px 11px; border:1px solid var(--line); border-radius:13px; background:var(--page); color:var(--text); text-align:left; }
+.payment-grid button strong,.payment-grid button small { display:block; }
+.payment-grid button strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+.payment-grid button small { margin-top:4px; color:var(--muted); font-size:11px; }
+.payment-grid button[aria-pressed="true"] { border-color:var(--green); background:var(--green-soft); box-shadow:0 0 0 1px var(--green); color:var(--green); }
+.advanced-fields { border-top:1px solid var(--line); }
+.advanced-fields summary { padding:14px 0 2px; color:var(--muted); font-size:13px; cursor:pointer; list-style-position:inside; }
+.advanced-fields-body { display:grid; gap:14px; padding-top:14px; }
 .save-button { min-height:52px; margin-top:4px; border:0; border-radius:14px; background:var(--green); color:white; font-weight:650; }
 .delete-button { min-height:48px; border:0; background:transparent; color:#b33d3d; font-weight:600; }
 .toast { position:fixed; z-index:20; left:50%; bottom:calc(92px + env(safe-area-inset-bottom)); max-width:calc(100% - 32px); transform:translateX(-50%); padding:11px 15px; border-radius:12px; background:var(--text); color:var(--surface); box-shadow:var(--shadow); font-size:13px; text-align:center; }
