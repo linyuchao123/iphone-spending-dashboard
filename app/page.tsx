@@ -2,8 +2,8 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { Channel, Expense, PaymentChoice, SyncChange, SyncOperation, SyncResponse } from '@/lib/sync-types';
+import { buildHeatmap, buildTrend, dateKey, fullDateLabel, isInPeriod, shortDayLabel, type Period } from '@/lib/period-analytics';
 
-type Period = 'today' | 'week' | 'month';
 type SyncStatus = 'connecting' | 'saving' | 'synced' | 'offline' | 'error';
 type Draft = Omit<Expense, 'id' | 'amount' | 'source' | 'demo'> & { amount: string };
 type SyncOperationInput =
@@ -54,22 +54,6 @@ function demoData(): Expense[] {
 
 function money(value: number) {
   return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' }).format(value);
-}
-
-function dateKey(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function isInPeriod(value: string, period: Period) {
-  const date = new Date(value);
-  const now = new Date();
-  if (period === 'today') return dateKey(date) === dateKey(now);
-  if (period === 'month') return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
-  const monday = new Date(now);
-  const day = monday.getDay() || 7;
-  monday.setHours(0, 0, 0, 0);
-  monday.setDate(monday.getDate() - day + 1);
-  return date >= monday && date <= now;
 }
 
 function csvEscape(value: string | number) {
@@ -244,6 +228,8 @@ async function decodeCsv(file: File) {
 export default function Home() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [period, setPeriod] = useState<Period>('month');
+  const [now, setNow] = useState<Date | null>(null);
+  const [selectedHeatmapKey, setSelectedHeatmapKey] = useState('');
   const [budget, setBudget] = useState(5000);
   const [lastPayment, setLastPayment] = useState<PaymentChoice>({ channel: '微信', method: '零钱' });
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('connecting');
@@ -266,6 +252,7 @@ export default function Home() {
   const syncInFlight = useRef(false);
   const cloudHydrated = useRef(false);
   const syncRunner = useRef<() => Promise<void>>(async () => undefined);
+  const heatmapScroller = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -313,6 +300,22 @@ export default function Home() {
   useEffect(() => { expensesRef.current = expenses; }, [expenses]);
   useEffect(() => { budgetRef.current = budget; }, [budget]);
   useEffect(() => { paymentRef.current = lastPayment; }, [lastPayment]);
+  useEffect(() => {
+    const refreshDate = () => {
+      const next = new Date();
+      setNow(next);
+      setSelectedHeatmapKey((current) => current || dateKey(next));
+    };
+    refreshDate();
+    const interval = window.setInterval(refreshDate, 60_000);
+    window.addEventListener('focus', refreshDate);
+    document.addEventListener('visibilitychange', refreshDate);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshDate);
+      document.removeEventListener('visibilitychange', refreshDate);
+    };
+  }, []);
 
   useEffect(() => {
     if (!ready) return;
@@ -444,10 +447,10 @@ export default function Home() {
     queueOperations([operation({ kind: 'settings', settings: { budget: nextBudget, lastPayment: nextPayment } })]);
   }
 
-  const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period]);
+  const calculationDate = useMemo(() => now || new Date(2000, 0, 1, 12), [now]);
+  const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period, calculationDate)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period, calculationDate]);
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.amount, 0), [visible]);
-  const todayTotal = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, 'today')).reduce((sum, item) => sum + item.amount, 0), [expenses]);
-  const monthTotal = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, 'month')).reduce((sum, item) => sum + item.amount, 0), [expenses]);
+  const monthTotal = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, 'month', calculationDate)).reduce((sum, item) => sum + item.amount, 0), [expenses, calculationDate]);
 
   const categoryTotals = useMemo(() => {
     const values = new Map<string, number>();
@@ -460,15 +463,41 @@ export default function Home() {
     return { wechat, alipay: total - wechat };
   }, [visible, total]);
 
-  const trend = useMemo(() => {
-    const result = Array.from({ length: 7 }, (_, index) => {
-      const date = new Date();
-      date.setDate(date.getDate() - (6 - index));
-      return { key: dateKey(date), label: index === 6 ? '今天' : `${date.getMonth() + 1}/${date.getDate()}`, value: 0 };
-    });
-    expenses.forEach((item) => { const target = result.find((day) => day.key === dateKey(new Date(item.occurredAt))); if (target) target.value += item.amount; });
-    return result;
-  }, [expenses]);
+  const trend = useMemo(() => buildTrend(expenses, period, calculationDate), [expenses, period, calculationDate]);
+  const currentYear = calculationDate.getFullYear();
+  const heatmap = useMemo(() => buildHeatmap(expenses, currentYear), [expenses, currentYear]);
+  const currentYearDayOffset = Math.round((Date.UTC(currentYear, calculationDate.getMonth(), calculationDate.getDate()) - Date.UTC(currentYear, 0, 1)) / 86_400_000);
+  const currentHeatmapWeek = Math.floor((heatmap.startPadding + currentYearDayOffset) / 7);
+  const selectedHeatmapDay = heatmap.days.find((item) => item?.key === selectedHeatmapKey) || heatmap.days.find((item) => item?.key === dateKey(calculationDate)) || null;
+
+  const summaryCards = useMemo(() => {
+    const primary = { label: `${period === 'today' ? '今日' : period === 'week' ? '本周' : period === 'month' ? '本月' : '本年'}支出`, value: money(total), detail: `${visible.length} 笔消费` };
+    if (period === 'today') {
+      return [primary, { label: '消费笔数', value: String(visible.length), detail: '笔消费' }, { label: '平均每笔', value: money(visible.length ? total / visible.length : 0), detail: '今日单笔均值' }];
+    }
+    if (period === 'month') {
+      const remaining = budget - monthTotal;
+      return [primary, { label: '日均支出', value: money(total / calculationDate.getDate()), detail: `截至今日 ${calculationDate.getDate()} 天` }, { label: remaining >= 0 ? '月预算剩余' : '已超出预算', value: money(Math.abs(remaining)), detail: `预算 ${money(budget)}` }];
+    }
+    if (period === 'year') {
+      const monthly = Array.from({ length: 12 }, () => 0);
+      visible.forEach((item) => { monthly[new Date(item.occurredAt).getMonth()] += item.amount; });
+      const highest = Math.max(...monthly);
+      const highestMonth = highest ? monthly.indexOf(highest) : -1;
+      return [primary, { label: '月均支出', value: money(total / (calculationDate.getMonth() + 1)), detail: `截至${calculationDate.getMonth() + 1}月` }, { label: '最高消费月', value: money(highest), detail: highestMonth >= 0 ? `${highestMonth + 1}月` : '暂无消费' }];
+    }
+    const daily = new Map<string, number>();
+    visible.forEach((item) => { const key = dateKey(new Date(item.occurredAt)); daily.set(key, (daily.get(key) || 0) + item.amount); });
+    const highest = [...daily.entries()].sort((a, b) => b[1] - a[1])[0];
+    const elapsed = calculationDate.getDay() || 7;
+    return [primary, { label: '日均支出', value: money(total / elapsed), detail: `本周已过 ${elapsed} 天` }, { label: '最高消费日', value: money(highest?.[1] || 0), detail: highest ? shortDayLabel(highest[0]) : '暂无消费' }];
+  }, [period, total, visible, budget, monthTotal, calculationDate]);
+
+  useEffect(() => {
+    const scroller = heatmapScroller.current;
+    if (!scroller) return;
+    scroller.scrollLeft = Math.max(0, currentHeatmapWeek * 13 - scroller.clientWidth * 0.7);
+  }, [currentHeatmapWeek]);
 
   const latestImport = useMemo(() => {
     const imported = expenses.filter((item) => item.batchId && item.importedAt).sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''));
@@ -634,7 +663,8 @@ export default function Home() {
     setTimeout(() => setNotice(''), 2600);
   }
 
-  const periodLabel = period === 'today' ? '今日' : period === 'week' ? '本周' : '本月';
+  const periodLabel = period === 'today' ? '今日' : period === 'week' ? '本周' : period === 'month' ? '本月' : '本年';
+  const trendEyebrow = period === 'today' ? '每 4 小时' : period === 'week' ? '周一至周日' : period === 'month' ? '每 7 天' : '1 月至 12 月';
   const maxTrend = Math.max(...trend.map((day) => day.value), 1);
   const previewTotal = importPreview?.expenses.reduce((sum, item) => sum + item.amount, 0) || 0;
   const previewDates = importPreview?.expenses.map((item) => item.occurredAt).sort() || [];
@@ -651,25 +681,52 @@ export default function Home() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div><p className="eyebrow">云端账本</p><h1>消费有迹</h1></div>
+        <div><p className="eyebrow live-date">{now ? fullDateLabel(now) : '正在获取本地日期'}</p><h1>消费有迹</h1></div>
         <button className={`privacy-chip sync-${syncStatus}`} type="button" onClick={handleSyncChip}>{syncLabel}</button>
       </header>
 
       <nav className="period-tabs" aria-label="统计周期">
-        {([['today', '今天'], ['week', '本周'], ['month', '本月']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={period === value} onClick={() => setPeriod(value)}>{label}</button>)}
+        {([['today', '今天'], ['week', '本周'], ['month', '本月'], ['year', '本年']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={period === value} onClick={() => setPeriod(value)}>{label}</button>)}
       </nav>
 
       {expenses.some((item) => item.demo) && <div className="demo-banner"><span>当前包含示例记录</span><button type="button" onClick={() => setExpenses((current) => current.filter((item) => !item.demo))}>清除示例</button></div>}
 
       <section className="summary-grid" aria-label="消费概览">
-        <article className="summary-card primary-card"><span>{periodLabel}支出</span><strong>{money(total)}</strong><small>{visible.length} 笔消费</small></article>
-        <article className="summary-card"><span>今日支出</span><strong>{money(todayTotal)}</strong><small>{expenses.filter((item) => isInPeriod(item.occurredAt, 'today')).length} 笔</small></article>
-        <article className="summary-card"><span>月预算剩余</span><strong>{money(Math.max(0, budget - monthTotal))}</strong><small>预算 {money(budget)}</small></article>
+        {summaryCards.map((card, index) => <article className={`summary-card${index === 0 ? ' primary-card' : ''}`} key={card.label}><span>{card.label}</span><strong>{card.value}</strong><small>{card.detail}</small></article>)}
+      </section>
+
+      <section className="panel heatmap-panel" aria-labelledby="heatmap-title">
+        <div className="section-head"><div><p className="eyebrow">{heatmap.year} 年</p><h2 id="heatmap-title">消费热力图</h2></div><span className="section-note">颜色越深，消费越多</span></div>
+        <div className="heatmap-layout">
+          <div className="heatmap-weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+          <div className="heatmap-scroll" ref={heatmapScroller}>
+            <div className="heatmap-content">
+              <div className="heatmap-months" aria-hidden="true">{heatmap.months.map((month) => <span key={month.label} style={{ left: `${month.week * 13}px` }}>{month.label}</span>)}</div>
+              <div className="heatmap-grid">
+                {heatmap.days.map((day, index) => day ? (
+                  <button
+                    className={`heatmap-cell heat-level-${day.level}`}
+                    type="button"
+                    key={day.key}
+                    aria-label={`${fullDateLabel(day.date)}，消费${money(day.amount)}，${day.count}笔`}
+                    aria-pressed={selectedHeatmapDay?.key === day.key}
+                    title={`${shortDayLabel(day.key)} · ${money(day.amount)} · ${day.count}笔`}
+                    onClick={() => setSelectedHeatmapKey(day.key)}
+                  />
+                ) : <span className="heatmap-placeholder" key={`empty-${index}`} aria-hidden="true" />)}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="heatmap-footer">
+          <div className="heatmap-selection" aria-live="polite"><strong>{selectedHeatmapDay ? fullDateLabel(selectedHeatmapDay.date) : '选择一天查看详情'}</strong><span>{selectedHeatmapDay ? `${money(selectedHeatmapDay.amount)} · ${selectedHeatmapDay.count} 笔` : ''}</span></div>
+          <div className="heatmap-legend" aria-label="消费金额颜色图例"><span>少</span>{[0, 1, 2, 3, 4].map((level) => <i className={`heat-level-${level}`} key={level} />)}<span>多</span></div>
+        </div>
       </section>
 
       <section className="panel trend-panel">
-        <div className="section-head"><div><p className="eyebrow">近 7 天</p><h2>每日趋势</h2></div><span className="section-note">共 {money(trend.reduce((sum, day) => sum + day.value, 0))}</span></div>
-        <div className="trend-chart" role="img" aria-label={trend.map((day) => `${day.label}${money(day.value)}`).join('，')}>
+        <div className="section-head"><div><p className="eyebrow">{trendEyebrow}</p><h2>{periodLabel}消费趋势</h2></div><span className="section-note">共 {money(trend.reduce((sum, day) => sum + day.value, 0))}</span></div>
+        <div className={`trend-chart trend-${period}`} style={{ gridTemplateColumns: `repeat(${trend.length}, minmax(${period === 'year' ? '38px' : '0'}, 1fr))` }} role="img" aria-label={trend.map((day) => `${day.label}${money(day.value)}`).join('，')}>
           {trend.map((day) => <div className="trend-day" key={day.key}><span className="trend-value">{day.value ? Math.round(day.value) : ''}</span><div className="trend-bar" style={{ height: `${Math.max(4, day.value / maxTrend * 104)}px` }} /><span>{day.label}</span></div>)}
         </div>
       </section>
