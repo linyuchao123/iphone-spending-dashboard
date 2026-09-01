@@ -34,7 +34,7 @@ function response(body: unknown, status = 200) {
 }
 
 function validChannel(value: unknown): value is Channel {
-  return value === '微信' || value === '支付宝';
+  return value === '微信' || value === '支付宝' || value === '校园卡' || value === '银行卡';
 }
 
 function sanitizePayment(value: unknown): PaymentChoice | null {

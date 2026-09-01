@@ -24,13 +24,26 @@ const OUTBOX_KEY = 'spending-trace-sync-outbox-v1';
 const REVISION_KEY = 'spending-trace-sync-revision-v1';
 const DEVICE_KEY = 'spending-trace-device-v1';
 const categories = ['餐饮', '交通', '购物', '日用', '娱乐', '住房', '医疗', '人情', '其他'];
-const methods = ['零钱', '花呗', '银行卡', '余额', '其他'];
+const channels: Channel[] = ['微信', '支付宝', '校园卡', '银行卡'];
+const methods = ['零钱', '花呗', '银行卡', '余额', '直接支付', '其他'];
 const paymentPresets: Array<PaymentChoice & { label: string; detail: string }> = [
   { channel: '微信', method: '零钱', label: '微信零钱', detail: '微信余额' },
   { channel: '微信', method: '银行卡', label: '微信银行卡', detail: '微信绑卡' },
   { channel: '支付宝', method: '花呗', label: '支付宝花呗', detail: '花呗付款' },
   { channel: '支付宝', method: '银行卡', label: '支付宝银行卡', detail: '支付宝绑卡' },
+  { channel: '校园卡', method: '余额', label: '校园卡余额', detail: '校园卡账户' },
+  { channel: '银行卡', method: '直接支付', label: '银行卡支付', detail: '银行卡直接付款' },
 ];
+const channelStyles: Array<{ channel: Channel; className: string; mark: string }> = [
+  { channel: '微信', className: 'wechat', mark: '微' },
+  { channel: '支付宝', className: 'alipay', mark: '支' },
+  { channel: '校园卡', className: 'campus', mark: '校' },
+  { channel: '银行卡', className: 'bank', mark: '卡' },
+];
+
+function isChannel(value: unknown): value is Channel {
+  return channels.includes(value as Channel);
+}
 
 function localDateTime(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -228,6 +241,7 @@ async function decodeCsv(file: File) {
 export default function Home() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [period, setPeriod] = useState<Period>('month');
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
   const [now, setNow] = useState<Date | null>(null);
   const [selectedHeatmapKey, setSelectedHeatmapKey] = useState('');
   const [budget, setBudget] = useState(5000);
@@ -273,7 +287,7 @@ export default function Home() {
         if (settings) {
           const parsed = JSON.parse(settings);
           setBudget(Number(parsed.budget) || 5000);
-          if ((parsed.lastChannel === '微信' || parsed.lastChannel === '支付宝') && typeof parsed.lastMethod === 'string') {
+          if (isChannel(parsed.lastChannel) && typeof parsed.lastMethod === 'string') {
             savedPayment = { channel: parsed.lastChannel, method: parsed.lastMethod };
             setLastPayment(savedPayment);
           }
@@ -281,7 +295,8 @@ export default function Home() {
         const params = new URLSearchParams(window.location.search);
         const amount = params.get('amount');
         if (amount) {
-          const channel = params.get('channel') === '支付宝' ? '支付宝' : params.get('channel') === '微信' ? '微信' : savedPayment.channel;
+          const requestedChannel = params.get('channel');
+          const channel = isChannel(requestedChannel) ? requestedChannel : savedPayment.channel;
           const method = params.get('method') || savedPayment.method;
           setDraft({ ...makeDraft({ channel, method }), amount, merchant: params.get('merchant') || '' });
           setShowAdd(true);
@@ -448,9 +463,12 @@ export default function Home() {
   }
 
   const calculationDate = useMemo(() => now || new Date(2000, 0, 1, 12), [now]);
-  const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period, calculationDate)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period, calculationDate]);
+  const periodDate = useMemo(() => selectedMonth === null
+    ? calculationDate
+    : new Date(calculationDate.getFullYear(), selectedMonth, 1, 12), [calculationDate, selectedMonth]);
+  const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period, periodDate)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period, periodDate]);
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.amount, 0), [visible]);
-  const monthTotal = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, 'month', calculationDate)).reduce((sum, item) => sum + item.amount, 0), [expenses, calculationDate]);
+  const monthTotal = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, 'month', periodDate)).reduce((sum, item) => sum + item.amount, 0), [expenses, periodDate]);
 
   const categoryTotals = useMemo(() => {
     const values = new Map<string, number>();
@@ -458,12 +476,12 @@ export default function Home() {
     return [...values.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   }, [visible]);
 
-  const channelTotals = useMemo(() => {
-    const wechat = visible.filter((item) => item.channel === '微信').reduce((sum, item) => sum + item.amount, 0);
-    return { wechat, alipay: total - wechat };
-  }, [visible, total]);
+  const channelTotals = useMemo(() => channelStyles.map((style) => ({
+    ...style,
+    amount: visible.filter((item) => item.channel === style.channel).reduce((sum, item) => sum + item.amount, 0),
+  })), [visible]);
 
-  const trend = useMemo(() => buildTrend(expenses, period, calculationDate), [expenses, period, calculationDate]);
+  const trend = useMemo(() => buildTrend(expenses, period, periodDate), [expenses, period, periodDate]);
   const currentYear = calculationDate.getFullYear();
   const heatmap = useMemo(() => buildHeatmap(expenses, currentYear), [expenses, currentYear]);
   const currentYearDayOffset = Math.round((Date.UTC(currentYear, calculationDate.getMonth(), calculationDate.getDate()) - Date.UTC(currentYear, 0, 1)) / 86_400_000);
@@ -471,13 +489,15 @@ export default function Home() {
   const selectedHeatmapDay = heatmap.days.find((item) => item?.key === selectedHeatmapKey) || heatmap.days.find((item) => item?.key === dateKey(calculationDate)) || null;
 
   const summaryCards = useMemo(() => {
-    const primary = { label: `${period === 'today' ? '今日' : period === 'week' ? '本周' : period === 'month' ? '本月' : '本年'}支出`, value: money(total), detail: `${visible.length} 笔消费` };
+    const monthLabel = selectedMonth === null ? '本月' : `${periodDate.getMonth() + 1}月`;
+    const primary = { label: `${period === 'today' ? '今日' : period === 'week' ? '本周' : period === 'month' ? monthLabel : '本年'}支出`, value: money(total), detail: `${visible.length} 笔消费` };
     if (period === 'today') {
       return [primary, { label: '消费笔数', value: String(visible.length), detail: '笔消费' }, { label: '平均每笔', value: money(visible.length ? total / visible.length : 0), detail: '今日单笔均值' }];
     }
     if (period === 'month') {
       const remaining = budget - monthTotal;
-      return [primary, { label: '日均支出', value: money(total / calculationDate.getDate()), detail: `截至今日 ${calculationDate.getDate()} 天` }, { label: remaining >= 0 ? '月预算剩余' : '已超出预算', value: money(Math.abs(remaining)), detail: `预算 ${money(budget)}` }];
+      const elapsedDays = selectedMonth === null ? calculationDate.getDate() : new Date(periodDate.getFullYear(), periodDate.getMonth() + 1, 0).getDate();
+      return [primary, { label: '日均支出', value: money(total / elapsedDays), detail: selectedMonth === null ? `截至今日 ${elapsedDays} 天` : `全月 ${elapsedDays} 天` }, { label: remaining >= 0 ? '月预算剩余' : '已超出预算', value: money(Math.abs(remaining)), detail: `预算 ${money(budget)}` }];
     }
     if (period === 'year') {
       const monthly = Array.from({ length: 12 }, () => 0);
@@ -491,7 +511,7 @@ export default function Home() {
     const highest = [...daily.entries()].sort((a, b) => b[1] - a[1])[0];
     const elapsed = calculationDate.getDay() || 7;
     return [primary, { label: '日均支出', value: money(total / elapsed), detail: `本周已过 ${elapsed} 天` }, { label: '最高消费日', value: money(highest?.[1] || 0), detail: highest ? shortDayLabel(highest[0]) : '暂无消费' }];
-  }, [period, total, visible, budget, monthTotal, calculationDate]);
+  }, [period, total, visible, budget, monthTotal, calculationDate, periodDate, selectedMonth]);
 
   useEffect(() => {
     const scroller = heatmapScroller.current;
@@ -663,8 +683,24 @@ export default function Home() {
     setTimeout(() => setNotice(''), 2600);
   }
 
-  const periodLabel = period === 'today' ? '今日' : period === 'week' ? '本周' : period === 'month' ? '本月' : '本年';
-  const trendEyebrow = period === 'today' ? '每 4 小时' : period === 'week' ? '周一至周日' : period === 'month' ? '每 7 天' : '1 月至 12 月';
+  function selectPeriod(nextPeriod: Period) {
+    setSelectedMonth(null);
+    setPeriod(nextPeriod);
+  }
+
+  function openYearMonth(month: number) {
+    setSelectedMonth(month);
+    setPeriod('month');
+  }
+
+  const periodLabel = period === 'today'
+    ? '今日'
+    : period === 'week'
+      ? '本周'
+      : period === 'month'
+        ? selectedMonth === null ? '本月' : `${periodDate.getFullYear()}年${periodDate.getMonth() + 1}月`
+        : '本年';
+  const trendEyebrow = period === 'today' ? '每 4 小时' : period === 'week' ? '周一至周日' : period === 'month' ? '每 7 天' : '1 月至 12 月 · 点击月份查看明细';
   const maxTrend = Math.max(...trend.map((day) => day.value), 1);
   const previewTotal = importPreview?.expenses.reduce((sum, item) => sum + item.amount, 0) || 0;
   const previewDates = importPreview?.expenses.map((item) => item.occurredAt).sort() || [];
@@ -686,8 +722,15 @@ export default function Home() {
       </header>
 
       <nav className="period-tabs" aria-label="统计周期">
-        {([['today', '今天'], ['week', '本周'], ['month', '本月'], ['year', '本年']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={period === value} onClick={() => setPeriod(value)}>{label}</button>)}
+        {([['today', '今天'], ['week', '本周'], ['month', '本月'], ['year', '本年']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={period === value && selectedMonth === null} onClick={() => selectPeriod(value)}>{label}</button>)}
       </nav>
+
+      {selectedMonth !== null && (
+        <div className="month-drilldown" role="status">
+          <span>正在查看 <strong>{periodLabel}</strong> 的完整统计</span>
+          <button type="button" onClick={() => selectPeriod('year')}>返回本年</button>
+        </div>
+      )}
 
       {expenses.some((item) => item.demo) && <div className="demo-banner"><span>当前包含示例记录</span><button type="button" onClick={() => setExpenses((current) => current.filter((item) => !item.demo))}>清除示例</button></div>}
 
@@ -726,17 +769,22 @@ export default function Home() {
 
       <section className="panel trend-panel">
         <div className="section-head"><div><p className="eyebrow">{trendEyebrow}</p><h2>{periodLabel}消费趋势</h2></div><span className="section-note">共 {money(trend.reduce((sum, day) => sum + day.value, 0))}</span></div>
-        <div className={`trend-chart trend-${period}`} style={{ gridTemplateColumns: `repeat(${trend.length}, minmax(${period === 'year' ? '38px' : '0'}, 1fr))` }} role="img" aria-label={trend.map((day) => `${day.label}${money(day.value)}`).join('，')}>
-          {trend.map((day) => <div className="trend-day" key={day.key}><span className="trend-value">{day.value ? Math.round(day.value) : ''}</span><div className="trend-bar" style={{ height: `${Math.max(4, day.value / maxTrend * 104)}px` }} /><span>{day.label}</span></div>)}
+        <div className={`trend-chart trend-${period}`} style={{ gridTemplateColumns: `repeat(${trend.length}, minmax(${period === 'year' ? '38px' : '0'}, 1fr))` }} role={period === 'year' ? 'group' : 'img'} aria-label={trend.map((day) => `${day.label}${money(day.value)}`).join('，')}>
+          {trend.map((day, index) => {
+            const contents = <><span className="trend-value">{day.value ? Math.round(day.value) : ''}</span><span className="trend-bar" style={{ height: `${Math.max(4, day.value / maxTrend * 104)}px` }} /><span>{day.label}</span></>;
+            return period === 'year'
+              ? <button className="trend-day trend-month-button" type="button" key={day.key} onClick={() => openYearMonth(index)} aria-label={`查看${currentYear}年${index + 1}月消费，${money(day.value)}`}>{contents}</button>
+              : <div className="trend-day" key={day.key}>{contents}</div>;
+          })}
         </div>
       </section>
 
       <div className="insight-grid">
         <section className="panel compact-panel">
           <div className="section-head"><h2>支付渠道</h2><span className="section-note">{periodLabel}</span></div>
-          {[['微信', channelTotals.wechat, 'wechat'], ['支付宝', channelTotals.alipay, 'alipay']].map(([label, value, className]) => {
-            const amount = Number(value); const percentage = total ? Math.round(amount / total * 100) : 0;
-            return <div className="meter-row" key={label}><span>{label}</span><div className="meter"><i className={String(className)} style={{ width: `${percentage}%` }} /></div><strong>{percentage}%</strong></div>;
+          {channelTotals.map(({ channel, amount, className }) => {
+            const percentage = total ? Math.round(amount / total * 100) : 0;
+            return <div className="meter-row" key={channel}><span>{channel}</span><div className="meter"><i className={className} style={{ width: `${percentage}%` }} /></div><strong>{percentage}%</strong></div>;
           })}
         </section>
         <section className="panel compact-panel">
@@ -750,7 +798,7 @@ export default function Home() {
         <div className="transaction-list">
           {visible.length === 0 ? <p className="empty">这个周期还没有消费记录。</p> : visible.map((item) => (
             <button className="transaction" type="button" key={item.id} onClick={() => openEdit(item)}>
-              <span className={`channel-mark ${item.channel === '支付宝' ? 'alipay' : ''}`}>{item.channel === '微信' ? '微' : '支'}</span>
+              <span className={`channel-mark ${channelStyles.find((style) => style.channel === item.channel)?.className || ''}`}>{channelStyles.find((style) => style.channel === item.channel)?.mark || '付'}</span>
               <span className="transaction-copy"><strong>{item.merchant}</strong><span>{item.category} · {item.method}{item.demo ? ' · 示例' : item.source === 'import' ? ' · 导入' : ''}</span></span>
               <span className="transaction-amount"><strong>−{money(item.amount)}</strong><span>{new Date(item.occurredAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>
             </button>
@@ -783,7 +831,7 @@ export default function Home() {
                 <summary>更多信息（分类、时间、备注）</summary>
                 <div className="advanced-fields-body">
                   <div className="form-row">
-                    <label>渠道<select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value as Channel })}><option>微信</option><option>支付宝</option></select></label>
+                    <label>渠道<select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value as Channel })}>{channels.map((channel) => <option key={channel}>{channel}</option>)}</select></label>
                     <label>付款方式<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}>{methods.map((method) => <option key={method}>{method}</option>)}</select></label>
                   </div>
                   <div className="form-row">

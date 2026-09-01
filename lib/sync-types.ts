@@ -1,4 +1,4 @@
-export type Channel = '微信' | '支付宝';
+export type Channel = '微信' | '支付宝' | '校园卡' | '银行卡';
 export type PaymentChoice = { channel: Channel; method: string };
 
 export type Expense = {
