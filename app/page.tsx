@@ -909,12 +909,12 @@ export default function Home() {
               <label>金额<input className="amount-input" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} type="number" inputMode="decimal" min="0.01" step="0.01" placeholder="0.00" autoFocus required /></label>
               <label>商家或用途<input value={draft.merchant} onChange={(event) => setDraft({ ...draft, merchant: event.target.value })} type="text" placeholder="例如：午餐" /></label>
               <label>消费内容（可选）<input value={draft.itemName || ''} onChange={(event) => setDraft({ ...draft, itemName: event.target.value })} type="text" placeholder="例如：鸡腿饭、拿铁、纸巾" /></label>
-              <fieldset className="category-picker">
-                <legend>消费类型</legend>
-                <div className="category-grid">
-                  {categories.map((category) => <button key={category} type="button" aria-pressed={draft.category === category} onClick={() => setDraft({ ...draft, category })}>{category}</button>)}
-                </div>
-              </fieldset>
+              <label>消费类型
+                <select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>
+                  {!categories.includes(draft.category) && <option value={draft.category}>{draft.category}</option>}
+                  {categories.map((category) => <option key={category} value={category}>{category}</option>)}
+                </select>
+              </label>
               <fieldset className="payment-picker">
                 <legend>付款方式 <span>会记住本次选择</span></legend>
                 <div className="payment-grid">
