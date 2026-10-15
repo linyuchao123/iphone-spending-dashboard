@@ -18,14 +18,14 @@ type ImportPreview = {
   ignored: number;
   encoding: string;
 };
-type InsightScope = 'all' | 'year' | 'month';
+type InsightScope = 'all' | 'year' | 'month' | 'week';
 
 const STORAGE_KEY = 'spending-trace-expenses-v1';
 const SETTINGS_KEY = 'spending-trace-settings-v1';
 const OUTBOX_KEY = 'spending-trace-sync-outbox-v1';
 const REVISION_KEY = 'spending-trace-sync-revision-v1';
 const DEVICE_KEY = 'spending-trace-device-v1';
-const categories = ['餐饮', '交通', '购物', '日用', '娱乐', '住房', '医疗', '人情', '其他'];
+const categories = ['餐饮', '交通', '购物', '日用', '娱乐', 'AI订阅', '医疗', '住房', '人情', '其他'];
 const channels: Channel[] = ['微信', '支付宝', '校园卡', '银行卡'];
 const methods = ['零钱', '花呗', '银行卡', '余额', '直接支付', '其他'];
 const paymentPresets: Array<PaymentChoice & { label: string; detail: string }> = [
@@ -101,6 +101,7 @@ function autoCategory(text: string) {
     ['交通', /地铁|公交|铁路|高铁|火车|机票|航空|滴滴|打车|网约车|出租|加油|停车|高速|单车/],
     ['购物', /淘宝|天猫|京东|拼多多|唯品会|商城|商场|超市|服饰|数码|家电/],
     ['日用', /药店|生活用品|日用品|百货|洗护|纸巾|家居/],
+    ['AI订阅', /ChatGPT|OpenAI|Claude|Gemini|DeepSeek|Cursor|Copilot|Midjourney|AI订阅|人工智能订阅/i],
     ['娱乐', /电影|影院|游戏|视频|音乐|会员|演出|KTV|健身/],
     ['住房', /房租|物业|水费|电费|燃气|宽带|话费/],
     ['医疗', /医院|诊所|医疗|挂号|体检|药房/],
@@ -782,7 +783,7 @@ export default function Home() {
           <div className="insights-toolbar">
             <div><p className="eyebrow">消费去向</p><h2>消费统计</h2></div>
             <div className="insight-scope" role="group" aria-label="统计范围">
-              {([['all', '全部'], ['year', '本年'], ['month', '本月']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={insightScope === value} onClick={() => { setInsightScope(value); setSelectedMerchant(null); }}>{label}</button>)}
+              {([['all', '全部'], ['year', '本年'], ['month', '本月'], ['week', '本周']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={insightScope === value} onClick={() => { setInsightScope(value); setSelectedMerchant(null); }}>{label}</button>)}
             </div>
           </div>
           <section className="summary-grid" aria-label="统计概览">
@@ -908,6 +909,12 @@ export default function Home() {
               <label>金额<input className="amount-input" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} type="number" inputMode="decimal" min="0.01" step="0.01" placeholder="0.00" autoFocus required /></label>
               <label>商家或用途<input value={draft.merchant} onChange={(event) => setDraft({ ...draft, merchant: event.target.value })} type="text" placeholder="例如：午餐" /></label>
               <label>消费内容（可选）<input value={draft.itemName || ''} onChange={(event) => setDraft({ ...draft, itemName: event.target.value })} type="text" placeholder="例如：鸡腿饭、拿铁、纸巾" /></label>
+              <fieldset className="category-picker">
+                <legend>消费类型</legend>
+                <div className="category-grid">
+                  {categories.map((category) => <button key={category} type="button" aria-pressed={draft.category === category} onClick={() => setDraft({ ...draft, category })}>{category}</button>)}
+                </div>
+              </fieldset>
               <fieldset className="payment-picker">
                 <legend>付款方式 <span>会记住本次选择</span></legend>
                 <div className="payment-grid">
@@ -919,16 +926,13 @@ export default function Home() {
               </fieldset>
               <button className="save-button" type="submit">{editingId ? '保存修改' : `保存 · ${draft.channel}${draft.method}`}</button>
               <details className="advanced-fields">
-                <summary>更多信息（分类、时间、备注）</summary>
+                <summary>更多信息（时间、备注）</summary>
                 <div className="advanced-fields-body">
                   <div className="form-row">
                     <label>渠道<select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value as Channel })}>{channels.map((channel) => <option key={channel}>{channel}</option>)}</select></label>
                     <label>付款方式<select value={draft.method} onChange={(event) => setDraft({ ...draft, method: event.target.value })}>{methods.map((method) => <option key={method}>{method}</option>)}</select></label>
                   </div>
-                  <div className="form-row">
-                    <label>分类<select value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>{categories.map((category) => <option key={category}>{category}</option>)}</select></label>
-                    <label>时间<input value={draft.occurredAt} onChange={(event) => setDraft({ ...draft, occurredAt: event.target.value })} type="datetime-local" /></label>
-                  </div>
+                  <label>时间<input value={draft.occurredAt} onChange={(event) => setDraft({ ...draft, occurredAt: event.target.value })} type="datetime-local" /></label>
                   <label>备注（可选）<input value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} type="text" placeholder="例如：和朋友聚餐" /></label>
                 </div>
               </details>
