@@ -2,7 +2,8 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import type { Channel, Expense, PaymentChoice, SyncChange, SyncOperation, SyncResponse } from '@/lib/sync-types';
-import { buildHeatmap, buildTrend, dateKey, fullDateLabel, isInPeriod, shortDayLabel, type Period } from '@/lib/period-analytics';
+import { buildHeatmap, buildTrend, dateKey, fullDateLabel, isInPeriod, shortDayLabel, trendSelectionFor, type Period, type TrendSelection } from '@/lib/period-analytics';
+import { buildSpendingInsights, contentName, merchantName } from '@/lib/spending-insights';
 
 type SyncStatus = 'connecting' | 'saving' | 'synced' | 'offline' | 'error';
 type Draft = Omit<Expense, 'id' | 'amount' | 'source' | 'demo'> & { amount: string };
@@ -17,6 +18,7 @@ type ImportPreview = {
   ignored: number;
   encoding: string;
 };
+type InsightScope = 'all' | 'year' | 'month';
 
 const STORAGE_KEY = 'spending-trace-expenses-v1';
 const SETTINGS_KEY = 'spending-trace-settings-v1';
@@ -51,7 +53,7 @@ function localDateTime(date = new Date()) {
 }
 
 function makeDraft(payment: PaymentChoice = { channel: '微信', method: '零钱' }): Draft {
-  return { amount: '', merchant: '', category: '餐饮', channel: payment.channel, method: payment.method, occurredAt: localDateTime(), note: '' };
+  return { amount: '', merchant: '', itemName: '', category: '餐饮', channel: payment.channel, method: payment.method, occurredAt: localDateTime(), note: '' };
 }
 
 function demoData(): Expense[] {
@@ -126,7 +128,7 @@ function parseExpenseCsv(text: string, filename: string) {
     if (!Number.isFinite(amount) || amount <= 0 || !rawTime) { ignored += 1; return null; }
     const occurredAt = rawTime.length >= 16 ? rawTime.slice(0, 16).replace(' ', 'T') : localDateTime();
     const merchant = pick(row, ['交易对方', '交易对象', '商户名称', '卖家信息', '名称', '商家', '商品名称', '商品', '商品说明', '交易说明']) || '账单导入';
-    const product = pick(row, ['商品名称', '商品', '商品说明', '交易说明']);
+    const product = pick(row, ['消费内容', '商品名称', '商品', '商品说明', '交易说明']);
     const method = pick(row, ['支付方式', '支付渠道', '付款方式']) || inferredChannel;
     const rowChannel = pick(row, ['渠道']);
     const channel: Channel = rowChannel === '支付宝' || rowChannel === '微信' ? rowChannel : inferredChannel;
@@ -135,6 +137,7 @@ function parseExpenseCsv(text: string, filename: string) {
       id: `import-${Date.now()}-${index}`,
       amount,
       merchant,
+      itemName: product && product !== merchant ? product : undefined,
       category: pick(row, ['分类']) || autoCategory(`${merchant} ${product}`),
       channel,
       method,
@@ -242,6 +245,11 @@ export default function Home() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [period, setPeriod] = useState<Period>('month');
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
+  const [trendSelection, setTrendSelection] = useState<TrendSelection | null>(null);
+  const [showInsights, setShowInsights] = useState(false);
+  const [insightScope, setInsightScope] = useState<InsightScope>('all');
+  const [selectedMerchant, setSelectedMerchant] = useState<string | null>(null);
+  const [showAllMerchants, setShowAllMerchants] = useState(false);
   const [now, setNow] = useState<Date | null>(null);
   const [selectedHeatmapKey, setSelectedHeatmapKey] = useState('');
   const [budget, setBudget] = useState(5000);
@@ -267,6 +275,8 @@ export default function Home() {
   const cloudHydrated = useRef(false);
   const syncRunner = useRef<() => Promise<void>>(async () => undefined);
   const heatmapScroller = useRef<HTMLDivElement>(null);
+  const transactionsPanel = useRef<HTMLElement>(null);
+  const merchantDetailPanel = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let active = true;
@@ -467,6 +477,10 @@ export default function Home() {
     ? calculationDate
     : new Date(calculationDate.getFullYear(), selectedMonth, 1, 12), [calculationDate, selectedMonth]);
   const visible = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, period, periodDate)).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)), [expenses, period, periodDate]);
+  const transactionExpenses = useMemo(() => trendSelection && trendSelection.source === period
+    ? visible.filter((item) => item.occurredAt.slice(0, 10) >= trendSelection.start && item.occurredAt.slice(0, 10) <= trendSelection.end)
+    : visible, [visible, period, trendSelection]);
+  const selectionTotal = useMemo(() => transactionExpenses.reduce((sum, item) => sum + item.amount, 0), [transactionExpenses]);
   const total = useMemo(() => visible.reduce((sum, item) => sum + item.amount, 0), [visible]);
   const monthTotal = useMemo(() => expenses.filter((item) => isInPeriod(item.occurredAt, 'month', periodDate)).reduce((sum, item) => sum + item.amount, 0), [expenses, periodDate]);
 
@@ -487,6 +501,12 @@ export default function Home() {
   const currentYearDayOffset = Math.round((Date.UTC(currentYear, calculationDate.getMonth(), calculationDate.getDate()) - Date.UTC(currentYear, 0, 1)) / 86_400_000);
   const currentHeatmapWeek = Math.floor((heatmap.startPadding + currentYearDayOffset) / 7);
   const selectedHeatmapDay = heatmap.days.find((item) => item?.key === selectedHeatmapKey) || heatmap.days.find((item) => item?.key === dateKey(calculationDate)) || null;
+  const insightExpenses = useMemo(() => expenses.filter((item) => insightScope === 'all' || isInPeriod(item.occurredAt, insightScope, calculationDate)), [expenses, insightScope, calculationDate]);
+  const insights = useMemo(() => buildSpendingInsights(insightExpenses), [insightExpenses]);
+  const merchantDetail = insights.merchants.find((item) => item.name === selectedMerchant);
+  const merchantExpenses = useMemo(() => selectedMerchant
+    ? insightExpenses.filter((item) => merchantName(item) === selectedMerchant).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+    : [], [insightExpenses, selectedMerchant]);
 
   const summaryCards = useMemo(() => {
     const monthLabel = selectedMonth === null ? '本月' : `${periodDate.getMonth() + 1}月`;
@@ -528,7 +548,7 @@ export default function Home() {
   }, [expenses]);
 
   function openNew() { setEditingId(null); setDraft(makeDraft(lastPayment)); setShowAdd(true); }
-  function openEdit(item: Expense) { setEditingId(item.id); setDraft({ amount: String(item.amount), merchant: item.merchant, category: item.category, channel: item.channel, method: item.method, occurredAt: item.occurredAt, note: item.note || '' }); setShowAdd(true); }
+  function openEdit(item: Expense) { setEditingId(item.id); setDraft({ amount: String(item.amount), merchant: item.merchant, itemName: item.itemName || '', category: item.category, channel: item.channel, method: item.method, occurredAt: item.occurredAt, note: item.note || '' }); setShowAdd(true); }
 
   function choosePayment(payment: PaymentChoice) {
     setDraft((current) => ({ ...current, channel: payment.channel, method: payment.method }));
@@ -583,8 +603,8 @@ export default function Home() {
   }
 
   function exportCsv() {
-    const header = ['时间', '金额', '商家', '分类', '渠道', '付款方式', '备注'];
-    const rows = expenses.map((item) => [item.occurredAt.replace('T', ' '), item.amount, item.merchant, item.category, item.channel, item.method, item.note || ''].map(csvEscape).join(','));
+    const header = ['时间', '金额', '商家', '消费内容', '分类', '渠道', '付款方式', '备注'];
+    const rows = expenses.map((item) => [item.occurredAt.replace('T', ' '), item.amount, item.merchant, item.itemName || '', item.category, item.channel, item.method, item.note || ''].map(csvEscape).join(','));
     download(`消费记录-${dateKey(new Date())}.csv`, `\uFEFF${header.map(csvEscape).join(',')}\n${rows.join('\n')}`, 'text/csv;charset=utf-8');
   }
 
@@ -685,12 +705,34 @@ export default function Home() {
 
   function selectPeriod(nextPeriod: Period) {
     setSelectedMonth(null);
+    setTrendSelection(null);
+    setShowInsights(false);
     setPeriod(nextPeriod);
   }
 
   function openYearMonth(month: number) {
     setSelectedMonth(month);
+    setTrendSelection(null);
     setPeriod('month');
+  }
+
+  function selectTrendSegment(index: number) {
+    const next = trendSelectionFor(period, periodDate, index);
+    if (!next) return;
+    setTrendSelection((current) => current?.start === next.start && current.end === next.end ? null : next);
+    window.requestAnimationFrame(() => transactionsPanel.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
+
+  function openInsights() {
+    setTrendSelection(null);
+    setSelectedMerchant(null);
+    setShowInsights(true);
+  }
+
+  function selectMerchant(name: string) {
+    const opening = selectedMerchant !== name;
+    setSelectedMerchant(opening ? name : null);
+    if (opening) window.requestAnimationFrame(() => merchantDetailPanel.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
 
   const periodLabel = period === 'today'
@@ -700,7 +742,7 @@ export default function Home() {
       : period === 'month'
         ? selectedMonth === null ? '本月' : `${periodDate.getFullYear()}年${periodDate.getMonth() + 1}月`
         : '本年';
-  const trendEyebrow = period === 'today' ? '每 4 小时' : period === 'week' ? '周一至周日' : period === 'month' ? '每 7 天' : '1 月至 12 月 · 点击月份查看明细';
+  const trendEyebrow = period === 'today' ? '每 4 小时' : period === 'week' ? '周一至周日 · 点击某天查看流水' : period === 'month' ? '每 7 天 · 点击日期段查看流水' : '1 月至 12 月 · 点击月份查看明细';
   const maxTrend = Math.max(...trend.map((day) => day.value), 1);
   const previewTotal = importPreview?.expenses.reduce((sum, item) => sum + item.amount, 0) || 0;
   const previewDates = importPreview?.expenses.map((item) => item.occurredAt).sort() || [];
@@ -722,10 +764,11 @@ export default function Home() {
       </header>
 
       <nav className="period-tabs" aria-label="统计周期">
-        {([['today', '今天'], ['week', '本周'], ['month', '本月'], ['year', '本年']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={period === value && selectedMonth === null} onClick={() => selectPeriod(value)}>{label}</button>)}
+        {([['today', '今天'], ['week', '本周'], ['month', '本月'], ['year', '本年']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={!showInsights && period === value && selectedMonth === null} onClick={() => selectPeriod(value)}>{label}</button>)}
+        <button type="button" aria-pressed={showInsights} onClick={openInsights}>统计</button>
       </nav>
 
-      {selectedMonth !== null && (
+      {!showInsights && selectedMonth !== null && (
         <div className="month-drilldown" role="status">
           <span>正在查看 <strong>{periodLabel}</strong> 的完整统计</span>
           <button type="button" onClick={() => selectPeriod('year')}>返回本年</button>
@@ -733,6 +776,49 @@ export default function Home() {
       )}
 
       {expenses.some((item) => item.demo) && <div className="demo-banner"><span>当前包含示例记录</span><button type="button" onClick={() => setExpenses((current) => current.filter((item) => !item.demo))}>清除示例</button></div>}
+
+      {showInsights ? (
+        <div className="statistics-view">
+          <div className="insights-toolbar">
+            <div><p className="eyebrow">消费去向</p><h2>消费统计</h2></div>
+            <div className="insight-scope" role="group" aria-label="统计范围">
+              {([['all', '全部'], ['year', '本年'], ['month', '本月']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={insightScope === value} onClick={() => { setInsightScope(value); setSelectedMerchant(null); }}>{label}</button>)}
+            </div>
+          </div>
+          <section className="summary-grid" aria-label="统计概览">
+            <article className="summary-card primary-card"><span>累计支出</span><strong>{money(insights.total)}</strong><small>{insights.count} 笔消费</small></article>
+            <article className="summary-card"><span>消费商家/用途</span><strong>{insights.merchants.length}</strong><small>个不同名称</small></article>
+            <article className="summary-card"><span>平均每笔</span><strong>{money(insights.count ? insights.total / insights.count : 0)}</strong><small>按当前范围计算</small></article>
+          </section>
+
+          <div className="insight-grid">
+            <section className="panel compact-panel">
+              <div className="section-head"><div><p className="eyebrow">钱花在哪</p><h2>消费类型</h2></div><span className="section-note">按金额排序</span></div>
+              {insights.categories.length ? <div className="rank-list">{insights.categories.map((row) => <div className="rank-row" key={row.name}><div className="rank-copy"><strong>{row.name}</strong><small>{row.count} 笔 · {insights.total ? Math.round(row.amount / insights.total * 100) : 0}%</small></div><div className="rank-tail"><strong>{money(row.amount)}</strong><i style={{ width: `${insights.total ? row.amount / insights.total * 100 : 0}%` }} /></div></div>)}</div> : <p className="empty compact-empty">当前范围还没有消费记录</p>}
+            </section>
+            <section className="panel compact-panel">
+              <div className="section-head"><div><p className="eyebrow">吃的、喝的、用的</p><h2>常买内容</h2></div><span className="section-note">按次数排序</span></div>
+              {insights.contents.length ? <div className="rank-list">{insights.contents.slice(0, 10).map((row) => <div className="rank-row" key={row.name}><div className="rank-copy"><strong>{row.name}</strong><small>{row.count} 笔</small></div><div className="rank-tail"><strong>{money(row.amount)}</strong><i style={{ width: `${insights.contents[0].count ? row.count / insights.contents[0].count * 100 : 0}%` }} /></div></div>)}</div> : <p className="empty compact-empty">记账时填写“消费内容”，即可查看常买的东西。</p>}
+              {insights.contents.length > 0 && <p className="insight-footnote">旧账单若没有独立商品字段，会使用导入时保存的商品说明或备注。</p>}
+            </section>
+          </div>
+
+          <section className="panel merchants-panel">
+            <div className="section-head"><div><p className="eyebrow">经常去哪里</p><h2>商家/用途排行</h2></div><span className="section-note">点击查看常买内容</span></div>
+            {insights.merchants.length ? <div className="merchant-list">{insights.merchants.slice(0, showAllMerchants ? undefined : 10).map((row, index) => <button className="merchant-row" type="button" key={row.name} aria-pressed={selectedMerchant === row.name} onClick={() => selectMerchant(row.name)}><span className="merchant-index">{index + 1}</span><span className="merchant-copy"><strong>{row.name}</strong><small>{row.count} 笔{row.items.length ? ` · ${row.items.length} 种已记录内容` : ''}</small></span><span className="merchant-amount">{money(row.amount)}</span></button>)}</div> : <p className="empty compact-empty">当前范围还没有商家记录</p>}
+            {insights.merchants.length > 10 && <button className="text-button show-more" type="button" onClick={() => setShowAllMerchants((current) => !current)}>{showAllMerchants ? '收起' : `查看全部 ${insights.merchants.length} 个`}</button>}
+          </section>
+
+          {merchantDetail && <section className="panel merchant-detail" aria-live="polite" ref={merchantDetailPanel}>
+            <div className="section-head"><div><p className="eyebrow">商家详情</p><h2>{merchantDetail.name}</h2></div><button className="text-button" type="button" onClick={() => setSelectedMerchant(null)}>收起</button></div>
+            <p className="merchant-summary">共 {merchantDetail.count} 笔 · {money(merchantDetail.amount)}</p>
+            <h3>在这里常买</h3>
+            {merchantDetail.items.length ? <div className="rank-list">{merchantDetail.items.map((row) => <div className="rank-row" key={row.name}><div className="rank-copy"><strong>{row.name}</strong><small>{row.count} 笔</small></div><div className="rank-tail"><strong>{money(row.amount)}</strong></div></div>)}</div> : <p className="empty compact-empty">这些记录还没有填写具体消费内容；可以点开流水补充。</p>}
+            <h3>消费流水</h3>
+            <div className="transaction-list">{merchantExpenses.map((item) => <button className="transaction" type="button" key={item.id} onClick={() => openEdit(item)}><span className="transaction-copy"><strong>{contentName(item) || item.merchant}</strong><span>{item.category} · {item.occurredAt.replace('T', ' ')}</span></span><span className="transaction-amount"><strong>−{money(item.amount)}</strong></span></button>)}</div>
+          </section>}
+        </div>
+      ) : (<>
 
       <section className="summary-grid" aria-label="消费概览">
         {summaryCards.map((card, index) => <article className={`summary-card${index === 0 ? ' primary-card' : ''}`} key={card.label}><span>{card.label}</span><strong>{card.value}</strong><small>{card.detail}</small></article>)}
@@ -769,12 +855,13 @@ export default function Home() {
 
       <section className="panel trend-panel">
         <div className="section-head"><div><p className="eyebrow">{trendEyebrow}</p><h2>{periodLabel}消费趋势</h2></div><span className="section-note">共 {money(trend.reduce((sum, day) => sum + day.value, 0))}</span></div>
-        <div className={`trend-chart trend-${period}`} style={{ gridTemplateColumns: `repeat(${trend.length}, minmax(${period === 'year' ? '38px' : '0'}, 1fr))` }} role={period === 'year' ? 'group' : 'img'} aria-label={trend.map((day) => `${day.label}${money(day.value)}`).join('，')}>
+        <div className={`trend-chart trend-${period}`} style={{ gridTemplateColumns: `repeat(${trend.length}, minmax(${period === 'year' ? '38px' : '0'}, 1fr))` }} role={period === 'today' ? 'img' : 'group'} aria-label={trend.map((day) => `${day.label}${money(day.value)}`).join('，')}>
           {trend.map((day, index) => {
             const contents = <><span className="trend-value">{day.value ? Math.round(day.value) : ''}</span><span className="trend-bar" style={{ height: `${Math.max(4, day.value / maxTrend * 104)}px` }} /><span>{day.label}</span></>;
-            return period === 'year'
-              ? <button className="trend-day trend-month-button" type="button" key={day.key} onClick={() => openYearMonth(index)} aria-label={`查看${currentYear}年${index + 1}月消费，${money(day.value)}`}>{contents}</button>
-              : <div className="trend-day" key={day.key}>{contents}</div>;
+            if (period === 'today') return <div className="trend-day" key={day.key}>{contents}</div>;
+            const selected = period === 'week' && trendSelection?.source === 'week' && trendSelection.start === day.key
+              || period === 'month' && trendSelection?.source === 'month' && trendSelection.start.endsWith(`-${String(index * 7 + 1).padStart(2, '0')}`);
+            return <button className="trend-day trend-month-button" type="button" key={day.key} aria-pressed={selected} onClick={() => period === 'year' ? openYearMonth(index) : selectTrendSegment(index)} aria-label={period === 'year' ? `查看${currentYear}年${index + 1}月消费，${money(day.value)}` : `查看${period === 'week' ? shortDayLabel(day.key) : `${periodDate.getMonth() + 1}月${day.label}`}的消费记录，${money(day.value)}`}>{contents}</button>;
           })}
         </div>
       </section>
@@ -793,18 +880,21 @@ export default function Home() {
         </section>
       </div>
 
-      <section className="panel transactions-panel">
-        <div className="section-head"><div><p className="eyebrow">流水</p><h2>{periodLabel}消费</h2></div><button className="text-button" type="button" onClick={openNew}>新增一笔</button></div>
+      <section className="panel transactions-panel" ref={transactionsPanel}>
+        <div className="section-head"><div><p className="eyebrow">流水</p><h2>{trendSelection ? trendSelection.label : periodLabel}消费</h2></div><button className="text-button" type="button" onClick={openNew}>新增一笔</button></div>
+        {trendSelection && trendSelection.source === period && <div className="transaction-filter"><span>{transactionExpenses.length} 笔 · {money(selectionTotal)}</span><button type="button" onClick={() => setTrendSelection(null)}>查看{periodLabel}全部</button></div>}
         <div className="transaction-list">
-          {visible.length === 0 ? <p className="empty">这个周期还没有消费记录。</p> : visible.map((item) => (
+          {transactionExpenses.length === 0 ? <p className="empty">这个日期范围还没有消费记录。</p> : transactionExpenses.map((item) => (
             <button className="transaction" type="button" key={item.id} onClick={() => openEdit(item)}>
               <span className={`channel-mark ${channelStyles.find((style) => style.channel === item.channel)?.className || ''}`}>{channelStyles.find((style) => style.channel === item.channel)?.mark || '付'}</span>
-              <span className="transaction-copy"><strong>{item.merchant}</strong><span>{item.category} · {item.method}{item.demo ? ' · 示例' : item.source === 'import' ? ' · 导入' : ''}</span></span>
+              <span className="transaction-copy"><strong>{item.merchant}</strong><span>{item.itemName ? `${item.itemName} · ` : ''}{item.category} · {item.method}{item.demo ? ' · 示例' : item.source === 'import' ? ' · 导入' : ''}</span></span>
               <span className="transaction-amount"><strong>−{money(item.amount)}</strong><span>{new Date(item.occurredAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>
             </button>
           ))}
         </div>
       </section>
+
+      </>)}
 
       <button className="fab" type="button" onClick={openNew} aria-label="新增一笔消费">＋</button>
       {notice && <div className="toast" role="status">{notice}</div>}
@@ -817,6 +907,7 @@ export default function Home() {
             <form onSubmit={saveExpense}>
               <label>金额<input className="amount-input" value={draft.amount} onChange={(event) => setDraft({ ...draft, amount: event.target.value })} type="number" inputMode="decimal" min="0.01" step="0.01" placeholder="0.00" autoFocus required /></label>
               <label>商家或用途<input value={draft.merchant} onChange={(event) => setDraft({ ...draft, merchant: event.target.value })} type="text" placeholder="例如：午餐" /></label>
+              <label>消费内容（可选）<input value={draft.itemName || ''} onChange={(event) => setDraft({ ...draft, itemName: event.target.value })} type="text" placeholder="例如：鸡腿饭、拿铁、纸巾" /></label>
               <fieldset className="payment-picker">
                 <legend>付款方式 <span>会记住本次选择</span></legend>
                 <div className="payment-grid">

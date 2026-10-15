@@ -5,6 +5,7 @@ export type Expense = {
   id: string;
   amount: number;
   merchant: string;
+  itemName?: string;
   category: string;
   channel: Channel;
   method: string;

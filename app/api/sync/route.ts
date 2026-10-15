@@ -56,6 +56,7 @@ function sanitizeExpense(value: unknown): Expense | null {
     id: item.id,
     amount: item.amount,
     merchant: item.merchant.slice(0, 300),
+    itemName: optional('itemName', 160),
     category: item.category.slice(0, 80),
     channel: item.channel,
     method: item.method.slice(0, 80),

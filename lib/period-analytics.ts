@@ -1,6 +1,7 @@
 import type { Expense } from './sync-types';
 
 export type Period = 'today' | 'week' | 'month' | 'year';
+export type TrendSelection = { start: string; end: string; label: string; source: 'week' | 'month' };
 
 export function dateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -33,6 +34,25 @@ export function fullDateLabel(date: Date) {
 export function shortDayLabel(key: string) {
   const date = new Date(`${key}T12:00:00`);
   return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+export function trendSelectionFor(period: Period, now: Date, index: number): TrendSelection | null {
+  if (!Number.isInteger(index) || index < 0) return null;
+  if (period === 'week') {
+    if (index > 6) return null;
+    const date = startOfWeek(now);
+    date.setDate(date.getDate() + index);
+    return { start: dateKey(date), end: dateKey(date), label: fullDateLabel(date), source: 'week' };
+  }
+  if (period === 'month') {
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const firstDay = index * 7 + 1;
+    if (firstDay > lastDay) return null;
+    const start = new Date(now.getFullYear(), now.getMonth(), firstDay, 12);
+    const end = new Date(now.getFullYear(), now.getMonth(), Math.min(firstDay + 6, lastDay), 12);
+    return { start: dateKey(start), end: dateKey(end), label: `${start.getFullYear()}年${start.getMonth() + 1}月${start.getDate()}–${end.getDate()}日`, source: 'month' };
+  }
+  return null;
 }
 
 export function buildTrend(expenses: Expense[], period: Period, now: Date) {

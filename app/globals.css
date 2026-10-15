@@ -17,7 +17,7 @@ h2 { margin-bottom:0; font-size:18px; font-weight:650; letter-spacing:-.02em; }
 .privacy-chip { padding:7px 10px; border:0; border-radius:999px; background:var(--green-soft); color:var(--green); font-size:12px; font-weight:600; }
 .privacy-chip.sync-saving,.privacy-chip.sync-connecting { color:#80611b; background:#fff3d8; }
 .privacy-chip.sync-offline,.privacy-chip.sync-error { color:#9a4141; background:#fce8e8; }
-.period-tabs { display:grid; grid-template-columns:repeat(4,1fr); gap:7px; margin:-6px 0 14px; }
+.period-tabs { display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin:-6px 0 14px; }
 .period-tabs button { min-width:0; min-height:40px; padding:7px 10px; border:1px solid var(--line); border-radius:11px; background:transparent; color:var(--muted); font-weight:600; }
 .period-tabs button[aria-pressed="true"] { border-color:var(--text); background:var(--text); color:var(--surface); }
 .month-drilldown { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:-2px 0 14px; padding:10px 12px; border:1px solid var(--line); border-radius:13px; background:var(--green-soft); color:var(--green); font-size:12px; }
@@ -66,7 +66,41 @@ h2 { margin-bottom:0; font-size:18px; font-weight:650; letter-spacing:-.02em; }
 .trend-month-button { padding:0; border:0; border-radius:8px 8px 0 0; background:transparent; cursor:pointer; }
 .trend-month-button:hover,.trend-month-button:focus-visible { background:var(--green-soft); color:var(--green); outline:none; }
 .trend-month-button:focus-visible { box-shadow:inset 0 0 0 2px var(--green); }
+.trend-month-button[aria-pressed="true"] { background:var(--green-soft); color:var(--green); }
+.trend-month-button[aria-pressed="true"] .trend-bar { background:var(--text); }
 .insight-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
+.statistics-view { display:grid; gap:14px; }
+.statistics-view .summary-grid { margin-bottom:0; }
+.statistics-view .insight-grid { margin-bottom:0; }
+.insights-toolbar { display:flex; align-items:end; justify-content:space-between; gap:12px; padding:8px 1px 0; }
+.insight-scope { display:flex; flex:0 0 auto; gap:5px; padding:4px; border-radius:12px; background:var(--surface); border:1px solid var(--line); }
+.insight-scope button { min-height:34px; padding:5px 9px; border:0; border-radius:9px; background:transparent; color:var(--muted); font-size:12px; font-weight:600; }
+.insight-scope button[aria-pressed="true"] { background:var(--text); color:var(--surface); }
+.rank-list { display:grid; margin-top:13px; }
+.rank-row { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:57px; padding:9px 0; border-top:1px solid var(--line); }
+.rank-row:first-child { border-top:0; }
+.rank-copy { min-width:0; }
+.rank-copy strong,.rank-copy small,.rank-tail strong { display:block; }
+.rank-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+.rank-copy small { margin-top:4px; color:var(--muted); font-size:11px; }
+.rank-tail { flex:0 0 92px; text-align:right; }
+.rank-tail strong { font-size:13px; font-variant-numeric:tabular-nums; }
+.rank-tail i { display:block; height:4px; margin:7px 0 0 auto; border-radius:99px; background:var(--green); }
+.insight-footnote { margin:12px 0 0; color:var(--muted); font-size:11px; line-height:1.5; }
+.merchant-list { margin-top:12px; }
+.merchant-row { display:flex; align-items:center; width:100%; gap:11px; min-height:66px; padding:9px 5px; border:0; border-top:1px solid var(--line); background:transparent; color:var(--text); text-align:left; }
+.merchant-row[aria-pressed="true"] { background:var(--green-soft); border-radius:10px; }
+.merchant-row:hover,.merchant-row:focus-visible { background:var(--green-soft); outline:none; }
+.merchant-index { display:grid; flex:0 0 28px; place-items:center; width:28px; height:28px; border-radius:9px; background:var(--page); color:var(--green); font-size:12px; font-weight:700; }
+.merchant-copy { flex:1; min-width:0; }
+.merchant-copy strong,.merchant-copy small { display:block; }
+.merchant-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+.merchant-copy small { margin-top:4px; color:var(--muted); font-size:11px; }
+.merchant-amount { flex:0 0 auto; font-size:14px; font-weight:650; font-variant-numeric:tabular-nums; }
+.show-more { display:block; margin:4px auto 0; padding:10px; }
+.merchant-detail h3 { margin:18px 0 0; font-size:14px; }
+.merchant-summary { margin:10px 0 0; color:var(--muted); font-size:12px; }
+.merchant-detail .transaction-list { margin-top:8px; }
 .compact-panel { min-width:0; }
 .meter-row { display:flex; align-items:center; gap:9px; margin-top:15px; font-size:13px; }
 .meter-row>span { width:52px; }
@@ -81,6 +115,8 @@ h2 { margin-bottom:0; font-size:18px; font-weight:650; letter-spacing:-.02em; }
 .category-list strong { font-size:13px; font-variant-numeric:tabular-nums; }
 .compact-empty { padding:16px 0 4px; }
 .transactions-panel { margin-bottom:14px; }
+.transaction-filter { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:14px; padding:10px 12px; border-radius:11px; background:var(--green-soft); color:var(--green); font-size:12px; }
+.transaction-filter button { min-height:30px; padding:4px 8px; border:1px solid currentColor; border-radius:8px; background:transparent; color:inherit; font-size:11px; font-weight:650; }
 .transaction-list { margin-top:14px; }
 .transaction { width:100%; gap:12px; min-height:66px; padding:0; border:0; border-top:1px solid var(--line); background:transparent; color:var(--text); text-align:left; }
 .transaction:first-child { border-top:0; }
@@ -171,5 +207,5 @@ input:focus,select:focus { border-color:var(--green); box-shadow:0 0 0 3px var(-
 .danger-zone button { width:100%; min-height:46px; border:0; background:transparent; color:#b33d3d; font-weight:600; }
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 @media (max-width:620px) { .summary-grid{grid-template-columns:1fr 1fr}.primary-card{grid-column:1/-1}.insight-grid{grid-template-columns:1fr} }
-@media (max-width:520px) { .app-shell{padding-left:14px;padding-right:14px}.summary-card{padding:15px}.summary-card strong{font-size:23px}.panel{padding:16px}.form-row{gap:9px}.trend-chart{gap:4px}.heatmap-panel .section-note{max-width:110px;text-align:right}.heatmap-footer{align-items:start;flex-direction:column}.transaction{gap:10px}.transaction-copy span{max-width:145px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.import-stats{gap:6px}.import-stats div{padding:9px 8px}.import-stats strong{font-size:13px} }
+@media (max-width:520px) { .app-shell{padding-left:14px;padding-right:14px}.period-tabs{gap:5px}.period-tabs button{padding:6px 2px;font-size:13px}.summary-card{padding:15px}.summary-card strong{font-size:23px}.panel{padding:16px}.form-row{gap:9px}.trend-chart{gap:4px}.heatmap-panel .section-note{max-width:110px;text-align:right}.heatmap-footer{align-items:start;flex-direction:column}.transaction{gap:10px}.transaction-copy span{max-width:145px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.import-stats{gap:6px}.import-stats div{padding:9px 8px}.import-stats strong{font-size:13px}.insights-toolbar{align-items:start;flex-direction:column}.insight-scope{align-self:flex-start} }
 @media (prefers-color-scheme:dark) { :root{--page:#101512;--surface:#18201b;--text:#edf4ef;--muted:#a8b3ac;--line:#2e3a33;--green:#6bd79b;--green-soft:#183c29;--blue:#74baf1;--heat-0:#253029;--heat-1:#214832;--heat-2:#276d45;--heat-3:#3ba86a;--heat-4:#75dfa1;--shadow:0 18px 45px rgb(0 0 0 / 35%)}.primary-card{background:#ecf4ef;color:#142019;border-color:#ecf4ef}.primary-card span,.primary-card small{color:#5f6e65}.channel-mark.alipay{background:#173247}.channel-mark.campus{background:#3b2b18;color:#f2b769}.channel-mark.bank{background:#30243e;color:#cbb0ee}.fab,.save-button{color:#0b2416}.demo-banner{background:#3c3017;color:#f4d58c}.period-tabs button[aria-pressed="true"]{color:#18201b} }
