@@ -25,16 +25,16 @@ const SETTINGS_KEY = 'spending-trace-settings-v1';
 const OUTBOX_KEY = 'spending-trace-sync-outbox-v1';
 const REVISION_KEY = 'spending-trace-sync-revision-v1';
 const DEVICE_KEY = 'spending-trace-device-v1';
-const categories = ['餐饮', '交通', '购物', '日用', '娱乐', 'AI订阅', '医疗', '住房', '人情', '其他'];
+const categories = ['餐饮', '小甜水', '交通', '购物', '衣裤', '日用', '娱乐', '游戏', '学习资料', 'AI订阅', '医疗', '住房', '人情', '其他'];
 const channels: Channel[] = ['微信', '支付宝', '校园卡', '银行卡'];
 const methods = ['零钱', '花呗', '银行卡', '余额', '直接支付', '其他'];
-const paymentPresets: Array<PaymentChoice & { label: string; detail: string }> = [
-  { channel: '微信', method: '零钱', label: '微信零钱', detail: '微信余额' },
-  { channel: '微信', method: '银行卡', label: '微信银行卡', detail: '微信绑卡' },
-  { channel: '支付宝', method: '花呗', label: '支付宝花呗', detail: '花呗付款' },
-  { channel: '支付宝', method: '银行卡', label: '支付宝银行卡', detail: '支付宝绑卡' },
-  { channel: '校园卡', method: '余额', label: '校园卡余额', detail: '校园卡账户' },
-  { channel: '银行卡', method: '直接支付', label: '银行卡支付', detail: '银行卡直接付款' },
+const paymentPresets: Array<PaymentChoice & { label: string; detail: string; image: string }> = [
+  { channel: '微信', method: '零钱', label: '微信零钱', detail: '微信余额', image: '/payment-cards/wechat-balance.jpg' },
+  { channel: '微信', method: '银行卡', label: '微信银行卡', detail: '微信绑卡', image: '/payment-cards/wechat-bank.jpg' },
+  { channel: '支付宝', method: '花呗', label: '支付宝花呗', detail: '花呗付款', image: '/payment-cards/alipay-huabei.jpg' },
+  { channel: '支付宝', method: '银行卡', label: '支付宝银行卡', detail: '支付宝绑卡', image: '/payment-cards/alipay-bank.jpg' },
+  { channel: '校园卡', method: '余额', label: '校园卡余额', detail: '校园卡账户', image: '/payment-cards/campus-balance.jpg' },
+  { channel: '银行卡', method: '直接支付', label: '银行卡支付', detail: '银行卡直接付款', image: '/payment-cards/bank-direct.jpg' },
 ];
 const channelStyles: Array<{ channel: Channel; className: string; mark: string }> = [
   { channel: '微信', className: 'wechat', mark: '微' },
@@ -97,12 +97,16 @@ function pick(row: Record<string, string>, names: string[]) {
 
 function autoCategory(text: string) {
   const rules: Array<[string, RegExp]> = [
-    ['餐饮', /餐|饭|面|粉|粥|咖啡|茶|奶|饮|食|肯德基|麦当劳|美团|饿了么|瑞幸|星巴克|便利店/],
+    ['小甜水', /奶茶|果茶|饮品|咖啡|拿铁|可乐|果汁|甜水|瑞幸|星巴克/],
+    ['衣裤', /衣服|裤子|服饰|女装|男装|鞋帽|鞋子|外套|裙子/],
+    ['游戏', /游戏|Steam|米哈游|腾讯游戏|网易游戏|PlayStation|Nintendo/i],
+    ['学习资料', /教材|教辅|课本|学习资料|网课|课程|书籍|图书/],
+    ['餐饮', /餐|饭|面|粉|粥|茶|奶|饮|食|肯德基|麦当劳|美团|饿了么|便利店/],
     ['交通', /地铁|公交|铁路|高铁|火车|机票|航空|滴滴|打车|网约车|出租|加油|停车|高速|单车/],
-    ['购物', /淘宝|天猫|京东|拼多多|唯品会|商城|商场|超市|服饰|数码|家电/],
+    ['购物', /淘宝|天猫|京东|拼多多|唯品会|商城|商场|超市|数码|家电/],
     ['日用', /药店|生活用品|日用品|百货|洗护|纸巾|家居/],
     ['AI订阅', /ChatGPT|OpenAI|Claude|Gemini|DeepSeek|Cursor|Copilot|Midjourney|AI订阅|人工智能订阅/i],
-    ['娱乐', /电影|影院|游戏|视频|音乐|会员|演出|KTV|健身/],
+    ['娱乐', /电影|影院|视频|音乐|会员|演出|KTV|健身/],
     ['住房', /房租|物业|水费|电费|燃气|宽带|话费/],
     ['医疗', /医院|诊所|医疗|挂号|体检|药房/],
     ['人情', /红包|转账|礼物|礼金/],
@@ -920,7 +924,7 @@ export default function Home() {
                 <div className="payment-grid">
                   {paymentPresets.map((payment) => {
                     const selected = draft.channel === payment.channel && draft.method === payment.method;
-                    return <button key={payment.label} type="button" aria-pressed={selected} onClick={() => choosePayment(payment)}><strong>{payment.label}</strong><small>{payment.detail}</small></button>;
+                    return <button className="payment-card-choice" key={payment.label} type="button" aria-label={payment.label} aria-pressed={selected} onClick={() => choosePayment(payment)}><span className="payment-card-art" style={{ backgroundImage: `url(${payment.image})` }} aria-hidden="true" /><span className="payment-card-check" aria-hidden="true">✓</span><strong>{payment.label}</strong><small>{payment.detail}</small></button>;
                   })}
                 </div>
               </fieldset>
