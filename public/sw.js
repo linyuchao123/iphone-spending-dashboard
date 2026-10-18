@@ -1,4 +1,4 @@
-const CACHE = 'spending-trace-shell-v4';
+const CACHE = 'spending-trace-shell-v5';
 const CORE = ['/', '/manifest.webmanifest', '/favicon.svg', '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-512-maskable.png'];
 
 self.addEventListener('install', (event) => {
