@@ -36,12 +36,24 @@ const paymentPresets: Array<PaymentChoice & { label: string; detail: string; ima
   { channel: '校园卡', method: '余额', label: '校园卡余额', detail: '校园卡账户', image: '/payment-cards/campus-balance.jpg' },
   { channel: '银行卡', method: '直接支付', label: '银行卡支付', detail: '银行卡直接付款', image: '/payment-cards/bank-direct.jpg' },
 ];
-const channelStyles: Array<{ channel: Channel; className: string; mark: string }> = [
-  { channel: '微信', className: 'wechat', mark: '微' },
-  { channel: '支付宝', className: 'alipay', mark: '支' },
-  { channel: '校园卡', className: 'campus', mark: '校' },
-  { channel: '银行卡', className: 'bank', mark: '卡' },
+const channelStyles: Array<{ channel: Channel; className: string }> = [
+  { channel: '微信', className: 'wechat' },
+  { channel: '支付宝', className: 'alipay' },
+  { channel: '校园卡', className: 'campus' },
+  { channel: '银行卡', className: 'bank' },
 ];
+
+function paymentImageFor(item: Expense) {
+  const method = item.method || '';
+  if (item.channel === '微信') return paymentPresets[/(银行|信用卡|储蓄卡|借记卡)/.test(method) ? 1 : 0].image;
+  if (item.channel === '支付宝') return paymentPresets[/花呗/.test(method) ? 2 : 3].image;
+  if (item.channel === '校园卡') return paymentPresets[4].image;
+  return paymentPresets[5].image;
+}
+
+function PaymentLogo({ item }: { item: Expense }) {
+  return <span className="payment-logo" style={{ backgroundImage: `url(${paymentImageFor(item)})` }} aria-hidden="true" />;
+}
 
 function isChannel(value: unknown): value is Channel {
   return channels.includes(value as Channel);
@@ -820,7 +832,7 @@ export default function Home() {
             <h3>在这里常买</h3>
             {merchantDetail.items.length ? <div className="rank-list">{merchantDetail.items.map((row) => <div className="rank-row" key={row.name}><div className="rank-copy"><strong>{row.name}</strong><small>{row.count} 笔</small></div><div className="rank-tail"><strong>{money(row.amount)}</strong></div></div>)}</div> : <p className="empty compact-empty">这些记录还没有填写具体消费内容；可以点开流水补充。</p>}
             <h3>消费流水</h3>
-            <div className="transaction-list">{merchantExpenses.map((item) => <button className="transaction" type="button" key={item.id} onClick={() => openEdit(item)}><span className="transaction-copy"><strong>{contentName(item) || item.merchant}</strong><span>{item.category} · {item.occurredAt.replace('T', ' ')}</span></span><span className="transaction-amount"><strong>−{money(item.amount)}</strong></span></button>)}</div>
+            <div className="transaction-list">{merchantExpenses.map((item) => <button className="transaction" type="button" key={item.id} onClick={() => openEdit(item)}><PaymentLogo item={item} /><span className="transaction-copy"><strong>{contentName(item) || item.merchant}</strong><span>{item.category} · {item.channel} {item.method} · {item.occurredAt.replace('T', ' ')}</span></span><span className="transaction-amount"><strong>−{money(item.amount)}</strong></span></button>)}</div>
           </section>}
         </div>
       ) : (<>
@@ -891,8 +903,8 @@ export default function Home() {
         <div className="transaction-list">
           {transactionExpenses.length === 0 ? <p className="empty">这个日期范围还没有消费记录。</p> : transactionExpenses.map((item) => (
             <button className="transaction" type="button" key={item.id} onClick={() => openEdit(item)}>
-              <span className={`channel-mark ${channelStyles.find((style) => style.channel === item.channel)?.className || ''}`}>{channelStyles.find((style) => style.channel === item.channel)?.mark || '付'}</span>
-              <span className="transaction-copy"><strong>{item.merchant}</strong><span>{item.itemName ? `${item.itemName} · ` : ''}{item.category} · {item.method}{item.demo ? ' · 示例' : item.source === 'import' ? ' · 导入' : ''}</span></span>
+              <PaymentLogo item={item} />
+              <span className="transaction-copy"><strong>{item.merchant}</strong><span>{item.itemName ? `${item.itemName} · ` : ''}{item.category} · {item.channel} {item.method}{item.demo ? ' · 示例' : item.source === 'import' ? ' · 导入' : ''}</span></span>
               <span className="transaction-amount"><strong>−{money(item.amount)}</strong><span>{new Date(item.occurredAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></span>
             </button>
           ))}
