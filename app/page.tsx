@@ -53,7 +53,7 @@ function paymentIconFor(item: Expense) {
     if (/花呗/.test(method)) return '/payment-icons/alipay-huabei.jpg';
     if (/银行卡|银行|储蓄卡|信用卡|借记卡/.test(method)) return '/payment-icons/alipay-bank.jpg';
   }
-  if (item.channel === '校园卡') return '/payment-icons/soochow-campus.jpg';
+  if (item.channel === '校园卡') return '/payment-icons/soochow-campus-burgundy.jpg';
   if (item.channel === '银行卡') return '/payment-icons/bank-direct.jpg';
   return null;
 }

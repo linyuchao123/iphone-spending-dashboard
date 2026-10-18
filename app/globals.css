@@ -125,7 +125,7 @@ h2 { margin-bottom:0; font-size:18px; font-weight:650; letter-spacing:-.02em; }
 .payment-logo svg { width:29px; height:29px; }
 .payment-logo.wechat { background-color:#0ca66a; }
 .payment-logo.alipay { background-color:#1677d2; }
-.payment-logo.campus { background-color:#326752; }
+.payment-logo.campus { background-color:#85001c; }
 .payment-logo.bank { background-color:#496484; }
 .payment-logo.is-generated { background-position:center; background-repeat:no-repeat; background-size:100% 100%; box-shadow:none; }
 .transaction-copy { flex:1; min-width:0; }
