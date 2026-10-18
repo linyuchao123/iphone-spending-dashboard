@@ -43,16 +43,14 @@ const channelStyles: Array<{ channel: Channel; className: string }> = [
   { channel: '银行卡', className: 'bank' },
 ];
 
-function paymentImageFor(item: Expense) {
-  const method = item.method || '';
-  if (item.channel === '微信') return paymentPresets[/(银行|信用卡|储蓄卡|借记卡)/.test(method) ? 1 : 0].image;
-  if (item.channel === '支付宝') return paymentPresets[/花呗/.test(method) ? 2 : 3].image;
-  if (item.channel === '校园卡') return paymentPresets[4].image;
-  return paymentPresets[5].image;
-}
-
 function PaymentLogo({ item }: { item: Expense }) {
-  return <span className="payment-logo" style={{ backgroundImage: `url(${paymentImageFor(item)})` }} aria-hidden="true" />;
+  const kind = channelStyles.find((style) => style.channel === item.channel)?.className || 'bank';
+  return <span className={`payment-logo ${kind}`} aria-hidden="true">
+    {item.channel === '微信' && <svg viewBox="0 0 40 40" focusable="false"><path fill="currentColor" fillRule="evenodd" d="M17.4 8C10.5 8 5 12.6 5 18.2c0 2.5 1.1 4.7 3 6.5l-1 4.4 4.8-2.4c1.7.7 3.6 1.1 5.6 1.1h1c-1.1-1.7-1.7-3.5-1.7-5.4 0-5.2 4.7-9.3 10.9-9.7C25.3 9.8 21.6 8 17.4 8Zm-5.1 9.1a1.6 1.6 0 1 1 0-3.2 1.6 1.6 0 0 1 0 3.2Zm9.2 0a1.6 1.6 0 1 1 0-3.2 1.6 1.6 0 0 1 0 3.2Z"/><path fill="currentColor" fillRule="evenodd" d="M28.4 15c-5.8 0-10.6 3.7-10.6 8.3s4.8 8.3 10.6 8.3c1.5 0 2.9-.2 4.2-.7l3.6 1.8-.8-3.3a7.7 7.7 0 0 0 3.6-6.1c0-4.6-4.7-8.3-10.6-8.3Zm-3.7 7.4a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Zm7.3 0a1.3 1.3 0 1 1 0-2.6 1.3 1.3 0 0 1 0 2.6Z"/></svg>}
+    {item.channel === '支付宝' && <svg viewBox="0 0 40 40" focusable="false"><text x="20" y="28" textAnchor="middle" fill="currentColor" fontFamily="-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif" fontWeight="800" fontSize="28">支</text></svg>}
+    {item.channel === '校园卡' && <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" focusable="false"><path d="m7 16 13-7 13 7M9 18h22M11 30h18M8 33h24M13 19v11m7-11v11m7-11v11"/></svg>}
+    {item.channel === '银行卡' && <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" focusable="false"><rect x="6" y="10" width="28" height="20" rx="3.5"/><path d="M7 17h26M11 25h6"/></svg>}
+  </span>;
 }
 
 function isChannel(value: unknown): value is Channel {

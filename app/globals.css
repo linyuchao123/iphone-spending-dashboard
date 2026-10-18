@@ -121,7 +121,12 @@ h2 { margin-bottom:0; font-size:18px; font-weight:650; letter-spacing:-.02em; }
 .transaction-list { margin-top:14px; }
 .transaction { width:100%; gap:12px; min-height:66px; padding:0; border:0; border-top:1px solid var(--line); background:transparent; color:var(--text); text-align:left; }
 .transaction:first-child { border-top:0; }
-.payment-logo { flex:0 0 auto; display:block; width:40px; height:40px; border:1px solid var(--line); border-radius:11px; background-color:#fff; background-position:7% 15%; background-repeat:no-repeat; background-size:600% auto; box-shadow:0 1px 4px rgb(0 0 0 / 6%); }
+.payment-logo { flex:0 0 auto; display:grid; place-items:center; width:40px; height:40px; border-radius:12px; color:#fff; box-shadow:0 1px 3px rgb(0 0 0 / 8%); }
+.payment-logo svg { width:29px; height:29px; }
+.payment-logo.wechat { background:#0ca66a; }
+.payment-logo.alipay { background:#1677d2; }
+.payment-logo.campus { background:#326752; }
+.payment-logo.bank { background:#496484; }
 .transaction-copy { flex:1; min-width:0; }
 .transaction-copy strong,.transaction-copy span,.transaction-amount strong,.transaction-amount span { display:block; }
 .transaction-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:15px; }
